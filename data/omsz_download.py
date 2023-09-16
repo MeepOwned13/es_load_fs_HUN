@@ -12,7 +12,8 @@ def exit_handler():
     if not os.path.exists('temp_data'):
         return
     print('WARNING: last download my be corrupted if program was interrupted during download or extraction',
-          file=sys.stderr)
+          '\tIf process exited with code 0, ignore the warning above',
+          sep='\n', file=sys.stderr)
     print('Cleaning up temporary files...')
     for file in os.listdir('temp_data'):
         os.remove(f"temp_data/{file}")
@@ -29,7 +30,7 @@ if not os.path.exists('temp_data'):
 # Metadata download
 omsz_meta_url = 'https://odp.met.hu/climate/observations_hungary/hourly/station_meta_auto.csv'
 omsz_meta_page = req_get(omsz_meta_url)
-omsz_meta_path = 'omsz_data/station_meta_auto.csv'
+omsz_meta_path = 'temp_data/station_meta_auto.csv'
 if omsz_meta_page.status_code == 200:
     with open(omsz_meta_path, 'wb') as f:
         f.write(omsz_meta_page.content)
@@ -58,6 +59,11 @@ meta.index = meta['StationNumber']
 meta.drop('StationNumber', axis=1, inplace=True)
 meta.dropna(how='all', axis=1, inplace=True)
 meta = meta[~meta.index.duplicated(keep='last')]
+meta['StartDate'] = pd.to_datetime(meta['StartDate'], format='%Y%m%d')
+meta['EndDate'] = pd.to_datetime(meta['EndDate'], format='%Y%m%d')
+# I'll save metadata to csv, so I can use it later
+meta.to_csv('omsz_meta.csv', sep=';')
+os.remove(omsz_meta_path)
 
 # Download and extract historical data
 for link in file_download:
