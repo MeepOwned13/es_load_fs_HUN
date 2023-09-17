@@ -27,6 +27,11 @@ def format_mavir(dataframe: pd.DataFrame):
     dataframe.index = dataframe['Time']
     dataframe.drop(['Time', 'Időpont'], axis=1, inplace=True)
     dataframe.dropna(axis=0, inplace=True)
+    dataframe.drop(['Nettó terv rendszerterhelés', 'Bruttó hitelesített rendszerterhelés tény',
+                    'Nettó tény rendszerterhelés - net.ker.elsz.meres', 'Bruttó terv rendszerterhelés',
+                    'Bruttó tény rendszerterhelés', 'Nettó rendszerterhelés tény - üzemirányítási',
+                    'Nettó terv rendszertermelés', 'Nettó MAVIR rendszerterhelés becslés'],
+                    inplace=True, axis=1)
     return dataframe
 
 
@@ -82,7 +87,7 @@ def main():
     df1 = download_from_to('mavir_1', from_in_ms, middle_in_ms)
     df2 = download_from_to('mavir_2', middle_in_ms, to_in_ms)
 
-    pd.concat([df1, df2]).to_csv('mavir_data/mavir.csv', index=True)
+    pd.concat([df1, df2]).to_csv('mavir_data/mavir.csv', sep=';')
 
     if not os.path.exists('mavir_data'):
         os.makedirs('mavir_data')
