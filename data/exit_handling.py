@@ -4,12 +4,12 @@ import atexit
 
 class ExitHooks(object):
     def __init__(self):
-        self.exit_code = None
+        self.exit_code = 0
         self.exception = None
-        self._orig_exit = None
+        self._orig_exit = sys.exit
+        self._orig_exc_handler = self.exc_handler
 
     def hook(self):
-        self._orig_exit = sys.exit
         sys.exit = self.exit
         sys.excepthook = self.exc_handler
 
@@ -19,3 +19,8 @@ class ExitHooks(object):
 
     def exc_handler(self, exc_type, exc, *args):
         self.exception = exc
+        self._orig_exc_handler(self, exc_type, exc, *args)
+
+
+exit_hooks = ExitHooks()
+exit_hooks.hook()
