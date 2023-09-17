@@ -7,6 +7,7 @@ import os
 import pandas as pd
 import atexit
 import exit_handling
+from shutil import rmtree
 
 
 def exiting():
@@ -17,9 +18,7 @@ def exiting():
     if not os.path.exists('temp_data'):
         return
     print('Cleaning up temporary files...')
-    for file in os.listdir('temp_data'):
-        os.remove(f"temp_data/{file}")
-    os.rmdir('temp_data')
+    rmtree('temp_data')
 
 
 def format_csv(file_path: str, output_path: str, start_date: str) -> bool:
@@ -33,7 +32,7 @@ def format_csv(file_path: str, output_path: str, start_date: str) -> bool:
     df.columns = df.columns.str.strip()  # remove trailing whitespaces
     df['Time'] = pd.to_datetime(df['Time'], format='%Y%m%d%H%M')  # convert to datetime
     df.index = df['Time']  # set index to datetime
-    if start_date in df.index:
+    if start_date not in df.index:
         return False
     df = df[start_date:]  # using data from 2015 onwards
     df.drop('Time', axis=1, inplace=True)  # remove unnecessary column
@@ -41,7 +40,7 @@ def format_csv(file_path: str, output_path: str, start_date: str) -> bool:
     df.drop(['StationNumber', 't', 'tn', 'tx', 'v', 'p', 'fs', 'fsd', 'fx', 'fxd', 'fxdat', 'fd', 'et5', 'et10', 'et20',
              'et50', 'et100', 'tsn', 'suv'], axis=1, inplace=True, errors='ignore')
     # 'suv' column doesn't exist in some instances
-    # still deciding if i should keep the 'we' column
+    # still deciding if I should keep the 'we' column
     df.to_csv(output_path, sep=';')
     return True
 
@@ -93,7 +92,7 @@ def main():
 
     start_date: str = '2015-01-01 00:00:00'
     # Download and extract historical data
-    for link in file_download:
+    for link in file_download[:2]:
         file = link.split('/')[-1]
         temp_path = f"temp_data/{file}"
         response = req_get(link, timeout=60)
@@ -108,7 +107,7 @@ def main():
         regex = re.compile(r'.*_(\d{5})_.*')
         try:
             with ZipFile(temp_path, 'r') as zip_obj:
-                # extract all files to omsz_data and remove redundant directory
+                # extract all files to 'omsz_data' and remove redundant directory
                 unzipped_path = f"temp_data/{file.split('.')[0]}"
                 zip_obj.extractall(unzipped_path)
 
@@ -120,7 +119,7 @@ def main():
                 else:
                     print(f"Throwing away: {csv_name},"
                           f"\tREASON: station started recording data later than {start_date}",
-                          file=sys.stderr)
+                          file=sys.stderr, sep='\n')
         # need to detect all possible exceptions with ZipFile and os functions
         except Exception as e:
             print(f"Error {e} for {temp_path}", file=sys.stderr)
