@@ -22,7 +22,7 @@ def exiting():
 
 def format_mavir(dataframe: pd.DataFrame):
     dataframe.columns = dataframe.columns.str.strip()
-    dataframe['Time'] = (pd.to_datetime(dataframe['Időpont'], utc=True) + pd.Timedelta(hours=1)).dt.tz_localize(None)
+    dataframe['Time'] = (pd.to_datetime(dataframe['Időpont'], utc=True)).dt.tz_localize(None)
     dataframe['Time'] = dataframe['Time']
     dataframe.index = dataframe['Time']
     dataframe.drop(['Time', 'Időpont'], axis=1, inplace=True)

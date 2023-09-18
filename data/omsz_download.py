@@ -42,7 +42,7 @@ def format_csv(file_path: str, start_date: str | None, end_date: str | None) -> 
         df = df[:end_date]
     df.drop('Time', axis=1, inplace=True)  # remove unnecessary column
     df.dropna(how='all', axis=1, inplace=True)  # remove columns with all NaN values
-    df.drop(['StationNumber', 't', 'tn', 'tx', 'v', 'p', 'fs', 'fsd', 'fx', 'fxd', 'fxdat', 'fd', 'et5', 'et10', 'et20',
+    df.drop(['StationNumber', 't', 'tn', 'tx', 'v', 'fs', 'fsd', 'fx', 'fxd', 'fxdat', 'fd', 'et5', 'et10', 'et20',
              'et50', 'et100', 'tsn', 'suv'], axis=1, inplace=True, errors='ignore')
     # 'suv' column doesn't exist in some instances
     # still deciding if I should keep the 'we' column
