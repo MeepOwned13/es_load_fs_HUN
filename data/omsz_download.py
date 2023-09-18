@@ -12,7 +12,7 @@ from shutil import rmtree
 
 def exiting():
     if exit_handling.exit_hooks.exit_code != 0 or exit_handling.exit_hooks.exception is not None:
-        print('WARNING: last download my be corrupted if program was interrupted during download or extraction',
+        print('WARNING: last download may be corrupted because program was interrupted during download and extraction',
               file=sys.stderr)
 
     if not os.path.exists('temp_data'):
@@ -21,7 +21,7 @@ def exiting():
     rmtree('temp_data')
 
 
-def format_csv(file_path: str, start_date: str | None) -> pd.DataFrame | None:
+def format_csv(file_path: str, start_date: str | None, end_date: str | None) -> pd.DataFrame | None:
     df: pd.DataFrame = pd.read_csv(file_path,
                                    skiprows=4,  # skip metadata of csv
                                    sep=';',  # separator
@@ -35,7 +35,11 @@ def format_csv(file_path: str, start_date: str | None) -> pd.DataFrame | None:
     if start_date is not None:
         if start_date not in df.index:
             return None
-        df = df[start_date:]  # using data from 2015 onwards
+        df = df[start_date:]
+    if end_date is not None:
+        if end_date not in df.index:
+            return None
+        df = df[:end_date]
     df.drop('Time', axis=1, inplace=True)  # remove unnecessary column
     df.dropna(how='all', axis=1, inplace=True)  # remove columns with all NaN values
     df.drop(['StationNumber', 't', 'tn', 'tx', 'v', 'p', 'fs', 'fsd', 'fx', 'fxd', 'fxdat', 'fd', 'et5', 'et10', 'et20',
@@ -135,7 +139,7 @@ def main():
             csv_code = int(regex.match(unzipped_path).group(1))
             csv_name = f"{csv_code}_{meta['RegioName'][csv_code].strip()}_{meta['StationName'][csv_code].strip()}.csv "
             csv_path = f"{unzipped_path}/{os.listdir(unzipped_path)[0]}"
-            df = format_csv(csv_path, start_date)
+            df = format_csv(csv_path, start_date, None)
             if df is None:
                 print(f"[HIST] Throwing away: {csv_name}, "
                       f"REASON: station started recording data later than {start_date}",
@@ -143,7 +147,7 @@ def main():
                 continue
         # need to detect all possible exceptions with ZipFile and os functions
         except Exception as e:
-            print(f"[HIST] Error {e} for {temp_path}", file=sys.stderr)
+            print(f"[ERROR] Error {e} for {temp_path}", file=sys.stderr)
             continue
 
         # extract recent year data
@@ -157,7 +161,7 @@ def main():
                 zip_obj.extractall(unzipped_path)
 
             csv_path = f"{unzipped_path}/{os.listdir(unzipped_path)[0]}"
-            df2 = format_csv(csv_path, None)
+            df2 = format_csv(csv_path, None, '2023-08-31 23:00:00')
         # need to detect all possible exceptions with ZipFile and os functions
         except Exception as e:
             print(f"[REC] Error {e} for {temp_path}", file=sys.stderr)
