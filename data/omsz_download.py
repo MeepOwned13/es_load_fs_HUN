@@ -21,7 +21,7 @@ def exiting():
     rmtree('temp_data')
 
 
-def format_csv(file_path: str, output_path: str, start_date: str) -> bool:
+def format_csv(file_path: str, start_date: str | None) -> pd.DataFrame | None:
     df: pd.DataFrame = pd.read_csv(file_path,
                                    skiprows=4,  # skip metadata of csv
                                    sep=';',  # separator
@@ -32,16 +32,57 @@ def format_csv(file_path: str, output_path: str, start_date: str) -> bool:
     df.columns = df.columns.str.strip()  # remove trailing whitespaces
     df['Time'] = pd.to_datetime(df['Time'], format='%Y%m%d%H%M')  # convert to datetime
     df.index = df['Time']  # set index to datetime
-    if start_date not in df.index:
-        return False
-    df = df[start_date:]  # using data from 2015 onwards
+    if start_date is not None:
+        if start_date not in df.index:
+            return None
+        df = df[start_date:]  # using data from 2015 onwards
     df.drop('Time', axis=1, inplace=True)  # remove unnecessary column
     df.dropna(how='all', axis=1, inplace=True)  # remove columns with all NaN values
     df.drop(['StationNumber', 't', 'tn', 'tx', 'v', 'p', 'fs', 'fsd', 'fx', 'fxd', 'fxdat', 'fd', 'et5', 'et10', 'et20',
              'et50', 'et100', 'tsn', 'suv'], axis=1, inplace=True, errors='ignore')
     # 'suv' column doesn't exist in some instances
     # still deciding if I should keep the 'we' column
-    df.to_csv(output_path, sep=';')
+    return df
+
+
+def load_meta(path: str) -> pd.DataFrame:
+    meta = pd.read_csv(path, sep=';', skipinitialspace=True, na_values='EOR')
+    meta.columns = meta.columns.str.strip()
+    meta.index = meta['StationNumber']
+    meta.drop('StationNumber', axis=1, inplace=True)
+    meta.dropna(how='all', axis=1, inplace=True)
+    meta = meta[~meta.index.duplicated(keep='last')]
+    meta['StartDate'] = pd.to_datetime(meta['StartDate'], format='%Y%m%d')
+    meta['EndDate'] = pd.to_datetime(meta['EndDate'], format='%Y%m%d')
+    # I'll save metadata to csv, so I can use it later
+    meta.to_csv('omsz_meta.csv', sep=';')
+    os.remove(path)
+    return meta
+
+
+def get_down_links(url: str, historical: bool) -> list[str]:
+    page = req_get(url)
+    soup = bs4.BeautifulSoup(page.text, 'html.parser')
+    file_download = soup.find_all('a')
+    regex = re.compile(r'.*\.zip')
+    file_download = [link.get('href').strip() for link in file_download if regex.match(link.get('href'))]
+    file_download = list(set(file_download))
+    if historical:
+        regex = re.compile(r'.*20221231.*')
+        file_download = [f"{url}{file}" for file in file_download if regex.match(file)]
+        return file_download
+    return [f"{url}{file}" for file in file_download]
+
+
+def download(url: str, path: str, part: str) -> bool:
+    response = req_get(url, timeout=60)
+    if response.status_code == 200:
+        with open(path, 'wb') as f:
+            f.write(response.content)
+            print(f"[{part}] Downloaded {path}")
+    else:
+        print(f"[{part}] Error {response.status_code} for {url}", file=sys.stderr)
+        return False
     return True
 
 
@@ -67,63 +108,64 @@ def main():
 
     # Get historical data download links
     omsz_historical_url = 'https://odp.met.hu/climate/observations_hungary/hourly/historical/'
-    omsz_historical_page = req_get(omsz_historical_url)
-    omsz_historical_soup = bs4.BeautifulSoup(omsz_historical_page.text, 'html.parser')
+    historical_download = get_down_links(omsz_historical_url, True)
 
-    file_download = omsz_historical_soup.find_all('a')
-    regex = re.compile(r'.*\.zip')
-    file_download = [link.get('href').strip() for link in file_download if regex.match(link.get('href'))]
-    file_download = list(set(file_download))
-    regex = re.compile(r'.*20221231.*')
-    file_download = [f"{omsz_historical_url}{file}" for file in file_download if regex.match(file)]
+    omsz_cyear_url = 'https://odp.met.hu/climate/observations_hungary/hourly/recent/'
+    recent_down = get_down_links(omsz_cyear_url, False)
+    regex = re.compile(r'.*_(\d*)_akt.zip.*')
+    recent_download_dict = {int(regex.match(link).group(1)): link for link in recent_down}
 
     # Load metadata
-    meta = pd.read_csv(omsz_meta_path, sep=';', skipinitialspace=True, na_values='EOR')
-    meta.columns = meta.columns.str.strip()
-    meta.index = meta['StationNumber']
-    meta.drop('StationNumber', axis=1, inplace=True)
-    meta.dropna(how='all', axis=1, inplace=True)
-    meta = meta[~meta.index.duplicated(keep='last')]
-    meta['StartDate'] = pd.to_datetime(meta['StartDate'], format='%Y%m%d')
-    meta['EndDate'] = pd.to_datetime(meta['EndDate'], format='%Y%m%d')
-    # I'll save metadata to csv, so I can use it later
-    meta.to_csv('omsz_meta.csv', sep=';')
-    os.remove(omsz_meta_path)
+    meta = load_meta(omsz_meta_path)
 
     start_date: str = '2015-01-01 00:00:00'
-    # Download and extract historical data
-    for link in file_download[:2]:
+    # Download and extract past data
+    for link in historical_download[:2]:
         file = link.split('/')[-1]
         temp_path = f"temp_data/{file}"
-        response = req_get(link, timeout=60)
-        if response.status_code == 200:
-            with open(temp_path, 'wb') as f:
-                f.write(response.content)
-                print(f"Downloaded {temp_path}")
-        else:
-            print(f"Error {response.status_code} for {link}", file=sys.stderr)
+        if not download(link, temp_path, 'HIST'):
             continue
 
         regex = re.compile(r'.*_(\d{5})_.*')
         try:
             with ZipFile(temp_path, 'r') as zip_obj:
-                # extract all files to 'omsz_data' and remove redundant directory
                 unzipped_path = f"temp_data/{file.split('.')[0]}"
                 zip_obj.extractall(unzipped_path)
 
-                csv_code = int(regex.match(unzipped_path).group(1))
-                csv_name = f"{meta['RegioName'][csv_code].strip()}_{meta['StationName'][csv_code].strip()}.csv "
-                csv_path = f"{unzipped_path}/{os.listdir(unzipped_path)[0]}"
-                if format_csv(csv_path, f"omsz_data/{csv_name}", start_date):
-                    print(f"Extracted and formatted: {csv_name}")
-                else:
-                    print(f"Throwing away: {csv_name},"
-                          f"\tREASON: station started recording data later than {start_date}",
-                          file=sys.stderr, sep='\n')
+            csv_code = int(regex.match(unzipped_path).group(1))
+            csv_name = f"{csv_code}_{meta['RegioName'][csv_code].strip()}_{meta['StationName'][csv_code].strip()}.csv "
+            csv_path = f"{unzipped_path}/{os.listdir(unzipped_path)[0]}"
+            df = format_csv(csv_path, start_date)
+            if df is None:
+                print(f"[HIST] Throwing away: {csv_name}, "
+                      f"REASON: station started recording data later than {start_date}",
+                      file=sys.stderr)
+                continue
         # need to detect all possible exceptions with ZipFile and os functions
         except Exception as e:
-            print(f"Error {e} for {temp_path}", file=sys.stderr)
+            print(f"[HIST] Error {e} for {temp_path}", file=sys.stderr)
             continue
+
+        # extract recent year data
+        recent_link = recent_download_dict[csv_code]
+        temp_path = f"temp_data/AKT_{recent_link.split('/')[-1]}"
+        if not download(recent_link, temp_path, 'REC'):
+            continue
+        try:
+            with ZipFile(temp_path, 'r') as zip_obj:
+                unzipped_path = f"temp_data/{temp_path.split('/')[-1].split('.')[0]}"
+                zip_obj.extractall(unzipped_path)
+
+            csv_path = f"{unzipped_path}/{os.listdir(unzipped_path)[0]}"
+            df2 = format_csv(csv_path, None)
+        # need to detect all possible exceptions with ZipFile and os functions
+        except Exception as e:
+            print(f"[REC] Error {e} for {temp_path}", file=sys.stderr)
+            continue
+
+        df = pd.concat([df, df2])
+        df.to_csv(f"omsz_data/{csv_name}", sep=';')
+        print(f"[DONE] Extracted and formatted: {csv_name}")
 
 
 if __name__ == '__main__':
