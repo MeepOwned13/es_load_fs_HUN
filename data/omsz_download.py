@@ -120,7 +120,7 @@ def main():
 
     start_date: str = '2015-01-01 00:00:00'
     # Download and extract past data
-    for link in historical_download[:2]:
+    for link in historical_download:
         file = link.split('/')[-1]
         temp_path = f"temp_data/{file}"
         if not download(link, temp_path, 'HIST'):
