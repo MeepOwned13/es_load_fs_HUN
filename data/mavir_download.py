@@ -6,6 +6,7 @@ import atexit
 import exit_handling
 from datetime import datetime
 import warnings
+from shutil import rmtree
 
 
 def exiting():
@@ -16,15 +17,30 @@ def exiting():
     if not os.path.exists('temp_data'):
         return
     print('Cleaning up temporary files...')
-    for file in os.listdir('temp_data'):
-        os.remove(f"temp_data/{file}")
-    os.rmdir('temp_data')
+    rmtree('temp_data')
+
+
+def format_mavir(dataframe: pd.DataFrame):
+    dataframe.columns = dataframe.columns.str.strip()
+    dataframe['Time'] = (pd.to_datetime(dataframe['Időpont'], utc=True) + pd.Timedelta(hours=1)).dt.tz_localize(None)
+    dataframe['Time'] = dataframe['Time']
+    dataframe.index = dataframe['Time']
+    dataframe.drop(['Time', 'Időpont'], axis=1, inplace=True)
+    dataframe.dropna(axis=0, inplace=True)
+    dataframe.drop(['Nettó terv rendszerterhelés', 'Bruttó hitelesített rendszerterhelés tény',
+                    'Nettó tény rendszerterhelés - net.ker.elsz.meres', 'Bruttó terv rendszerterhelés',
+                    'Bruttó tény rendszerterhelés', 'Nettó rendszerterhelés tény - üzemirányítási',
+                    'Nettó terv rendszertermelés', 'Nettó MAVIR rendszerterhelés becslés'],
+                    inplace=True, axis=1)
+    return dataframe
 
 
 def download_from_to(name: str, from_time: int, to_time: int):
     """Time should be given as ms"""
     if not os.path.exists('temp_data'):
         os.makedirs('temp_data')
+    if not os.path.exists('mavir_data'):
+        os.makedirs('mavir_data')
 
     url = (f"https://www.mavir.hu/rtdwweb/webuser/chart/7678/export"
            f"?exportType=xlsx"
@@ -47,7 +63,8 @@ def download_from_to(name: str, from_time: int, to_time: int):
     with warnings.catch_warnings(record=True):
         warnings.simplefilter("always")
         df = pd.read_excel(temp_path, skiprows=0, parse_dates=True, engine='openpyxl')
-    df.to_csv(f'mavir_data/{name}.csv', index=False, sep=';')
+
+    return format_mavir(df)
 
 
 def main():
@@ -67,8 +84,10 @@ def main():
     middle_time = middle_time.replace(minute=0, second=0, microsecond=0)
     middle_in_ms = int(middle_time.value / 1e6)
 
-    download_from_to('mavir_1', from_in_ms, middle_in_ms)
-    download_from_to('mavir_2', middle_in_ms, to_in_ms)
+    df1 = download_from_to('mavir_1', from_in_ms, middle_in_ms)
+    df2 = download_from_to('mavir_2', middle_in_ms, to_in_ms)
+
+    pd.concat([df1, df2]).to_csv('mavir_data/mavir.csv', sep=';')
 
     if not os.path.exists('mavir_data'):
         os.makedirs('mavir_data')
