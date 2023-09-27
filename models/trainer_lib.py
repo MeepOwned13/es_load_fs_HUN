@@ -20,7 +20,7 @@ def mpe(p, t):
     return np.mean((p - t) / t)
 
 
-def format_country_wide_dataset(file: str):
+def load_country_wide_dataset(file: str):
     df: pd.DataFrame = pd.read_csv(
         file,
         parse_dates=['Time'],
@@ -77,6 +77,30 @@ class EarlyStopper:
         return False
 
 
+class GridIterator:
+    def __init__(self, grid: dict):
+        self._keys: list = list(grid.keys())
+        self._values: list = list(grid.values())
+        self._combinations: list = []
+
+    def __iter__(self):
+        # choose all combinations of hyperparameters without repetition
+        self._combinations = self._values[0]
+        if len(self._keys) > 1:
+            self._combinations = [[comb] + [item] for item in self._values[1] for comb in self._combinations]
+        if len(self._keys) > 2:
+            for ls in self._values[2:]:
+                self._combinations = [comb + [item] for item in ls for comb in self._combinations]
+
+        return self
+
+    def __next__(self):
+        if len(self._combinations) > 0:
+            return dict(zip(self._keys, self._combinations.pop(0)))
+        else:
+            raise StopIteration()
+
+
 class TSMWrapper:
     def __init__(self, model: nn.Module, seq_len: int, pred_len: int):
         self._model: nn.Module = model.to(TRAINER_LIB_DEVICE)
@@ -87,10 +111,6 @@ class TSMWrapper:
         self._x_norm_std: np.ndarray | None = None
         self._y_norm_mean: np.ndarray | None = None
         self._y_norm_std: np.ndarray | None = None
-
-    def reinit_model(self):
-        self._model.__init__()
-        self._model = self._model.to(TRAINER_LIB_DEVICE)
 
     def _std_normalize(self, arr: np.ndarray, which: str, store: bool = False) -> np.ndarray:
         """which can be: 'x' or 'y' or None, if it remains unset, no standard normalization info is stored"""
@@ -143,6 +163,10 @@ class TSMWrapper:
         y = self._std_normalize(y, 'y', store_norm_info)
 
         return TimeSeriesDataset(x, y, seq_len=self._seq_len, pred_len=self._pred_len)
+
+    def reinit_model(self):
+        self._model.__init__()
+        self._model = self._model.to(TRAINER_LIB_DEVICE)
 
     def train_epoch(self, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
         optimizer = optimizer or torch.optim.Adam(self._model.parameters(), lr=lr)
@@ -204,13 +228,13 @@ class TSMWrapper:
             # stop condition
             if verbose > 0 and epoch > 10 and early_stopper(val_loss):
                 print("\r" + " " * 75, end="")
-                print(f"\rEarly stopping...\n\tEpoch {epoch+1:3d}: train loss: {train_loss:.6f}, "
+                print(f"\rEarly stopping...\n\tEpoch {epoch+1:03d}: train loss: {train_loss:.6f}, "
                       f"val loss: {val_loss:.6f}{text_test_loss}", end="")
                 break
 
             if verbose > 0 and test_loader:
                 print("\r" + " " * 75, end="")
-                print(f"\r\tEpoch {epoch+1:3d}: train loss: {train_loss:.6f}, "
+                print(f"\r\tEpoch {epoch+1:03d}: train loss: {train_loss:.6f}, "
                       f"val loss: {val_loss:.6f}{text_test_loss}", end="")
 
         if verbose > 0:
@@ -218,7 +242,7 @@ class TSMWrapper:
         return train_losses, val_losses, test_losses
 
     def validate_ts_model(self, x: np.ndarray, y: np.ndarray, epochs: int, loss_fn=nn.MSELoss(),
-                          lr=0.001, es_p=10, es_d=0., n_splits=5, verbose=2):
+                          lr=0.001, batch_size=128, es_p=10, es_d=0., n_splits=5, verbose=2):
         ts_cv = TimeSeriesSplit(n_splits=n_splits)
 
         train_losses = []
@@ -240,11 +264,11 @@ class TSMWrapper:
             val_dataset: TimeSeriesDataset = self._make_ts_dataset(x_val, y_val)
             test_dataset: TimeSeriesDataset = self._make_ts_dataset(x_test, y_test)
 
-            train_loader: DataLoader = DataLoader(train_dataset, batch_size=128, shuffle=False)
-            val_loader: DataLoader = DataLoader(val_dataset, batch_size=128, shuffle=False)
-            test_loader: DataLoader = DataLoader(test_dataset, batch_size=128, shuffle=False)
+            train_loader: DataLoader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
+            val_loader: DataLoader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+            test_loader: DataLoader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-            train_loss, test_loss, val_loss = self.train(train_loader, val_loader, test_loader, epochs=epochs, lr=lr,
+            train_loss, val_loss, test_loss = self.train(train_loader, val_loader, test_loader, epochs=epochs, lr=lr,
                                                          loss_fn=loss_fn, es_p=es_p, es_d=es_d, verbose=verbose-1)
 
             train_losses.append(train_loss)
@@ -255,6 +279,26 @@ class TSMWrapper:
                 print(f"[Fold {i+1}] END" if verbose > 1 else "- END")
 
         return train_losses, val_losses, test_losses
+
+    def grid_search(self, x: np.ndarray, y: np.ndarray, g: GridIterator, loss_fn=nn.MSELoss(), verbose=1):
+        best_params = None
+        best_score = np.inf
+        for i, params in enumerate(g):
+            if verbose > 0:
+                print(f"[Grid search {i+1:03d}] BEGIN", end=" ")
+            _, _, test_losses = self.validate_ts_model(x, y, loss_fn=loss_fn, verbose=0, **params)
+
+            test_losses = [ls[-1] for ls in test_losses]
+            score = sum(test_losses) / len(test_losses)
+
+            improved = score < best_score
+            best_params = params if improved else best_params
+            best_score = score if improved else best_score
+
+            if verbose > 0:
+                print(f"- END - Score: {score:.8f} {'*' if improved else ''}")
+
+        return best_params, best_score
 
     def predict_ts_model(self, x: np.ndarray, y: np.ndarray):
         self._model.eval()

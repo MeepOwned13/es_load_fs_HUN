@@ -7,9 +7,6 @@ from torch import nn
 import trainer_lib
 
 
-df = trainer_lib.format_country_wide_dataset('../data/final_dataframe.csv')
-
-
 class Model(nn.Module):
     def __init__(self):
         super(Model, self).__init__()
@@ -26,10 +23,16 @@ class Model(nn.Module):
         return x
 
 
+df = trainer_lib.load_country_wide_dataset('../data/final_dataframe.csv')
+
 X = df.to_numpy(dtype=np.float32)
 y = df['el_load'].to_numpy(dtype=np.float32)
 
+gi = trainer_lib.GridIterator({
+    'lr': [0.01, 0.001],
+    'epochs': [5, 20],
+})
+
 model = Model()
 wrap: trainer_lib.TSMWrapper = trainer_lib.TSMWrapper(model, 1, 1)
-wrap.validate_ts_model(X, y, epochs=10, lr=0.01)
-trainer_lib.TSMWrapper.print_evaluation_info(*wrap.predict_ts_model(X, y))
+b_p, b_s = wrap.grid_search(X, y, gi)
