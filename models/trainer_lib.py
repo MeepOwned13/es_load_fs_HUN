@@ -5,10 +5,36 @@ from torch import nn
 from sklearn.model_selection import TimeSeriesSplit
 from math import sqrt as math_sqrt
 import matplotlib.pyplot as plt
+import pandas as pd
 
 TRAINER_LIB_DEVICE = torch.device("cpu")
 if torch.cuda.is_available():
     TRAINER_LIB_DEVICE = torch.device("cuda")
+
+
+def format_country_wide_dataset(file: str):
+    df: pd.DataFrame = pd.read_csv(
+        file,
+        parse_dates=['Time'],
+        index_col='Time',
+        sep=';'
+    )
+
+    df['hour'] = df.index.hour
+    df['weekday'] = df.index.weekday
+    df['dayofyear'] = df.index.dayofyear
+    df['month'] = df.index.month
+    df['year'] = df.index.year
+
+    df['el_load'] = df['el_load'].clip(
+        lower=df['el_load'].quantile(0.001),
+        upper=df['el_load'].quantile(0.999)
+    )
+
+    df['el_load_lag24'] = df['el_load'].shift(24, fill_value=0)
+
+    return df[['el_load', 'prec', 'grad', 'holiday', 'weekend', 'hour',
+               'weekday', 'dayofyear', 'month', 'year', 'el_load_lag24']]
 
 
 class TimeSeriesDataset(Dataset):
@@ -54,35 +80,59 @@ class TSMWrapper:
         self._y_norm_mean: np.ndarray | None = None
         self._y_norm_std: np.ndarray | None = None
 
-    def _std_normalize(self, arr: np.ndarray, which: str | None = None) -> np.ndarray:
-        """which can be: 'x' or 'y' or None, if it remains unset, no standard normalization info is stored"""
-        mean = arr.mean(axis=0, keepdims=True)
-        std = arr.std(axis=0, keepdims=True)
+    def reinit_model(self):
+        self._model.__init__()
+        self._model = self._model.to(TRAINER_LIB_DEVICE)
 
-        if which == 'x':
-            self._x_norm_mean, self._x_norm_std = mean, std
-        elif which == 'y':
-            self._y_norm_mean, self._y_norm_std = mean, std
+    def _std_normalize(self, arr: np.ndarray, which: str, store: bool = False) -> np.ndarray:
+        """which can be: 'x' or 'y' or None, if it remains unset, no standard normalization info is stored"""
+        if which != 'x' and which != 'y':
+            raise ValueError("Argument 'which' can only be: 'x' or 'y'")
+
+        if store:
+            mean = arr.mean(axis=0, keepdims=True)
+            std = arr.std(axis=0, keepdims=True)
+
+            if which == 'x':
+                self._x_norm_mean, self._x_norm_std = mean, std
+            else:
+                self._y_norm_mean, self._y_norm_std = mean, std
+        else:
+            if which == 'x':
+                if self._x_norm_std is None or self._x_norm_mean is None:
+                    raise ValueError("Mean and std for x are not yet stored")
+
+                mean, std = self._x_norm_mean, self._x_norm_std
+            else:
+                if self._y_norm_std is None or self._y_norm_mean is None:
+                    raise ValueError("Mean and std for y are not yet stored")
+
+                mean, std = self._y_norm_mean, self._y_norm_std
 
         return (arr - mean) / std
 
     def _std_denormalize(self, arr: np.ndarray, which: str) -> np.ndarray:
-        if which == 'x':
-            mean, std = self._x_norm_mean, self._x_norm_std
-        elif which == 'y':
+        if which != 'x' and which != 'y':
+            raise ValueError("Argument 'which' can only be: 'x' or 'y'")
+
+        # checking y here first, since it's more likely to be used
+        if which == 'y':
+            if self._y_norm_std is None or self._y_norm_mean is None:
+                raise ValueError("Mean and std for y are not yet stored")
+
             mean, std = self._y_norm_mean, self._y_norm_std
         else:
-            raise ValueError("Argument 'which' can only be: 'x' or 'y'")
+            if self._x_norm_std is None or self._x_norm_mean is None:
+                raise ValueError("Mean and std for x are not yet stored")
+
+            mean, std = self._x_norm_mean, self._x_norm_std
 
         return arr * std + mean
 
     def _make_ts_dataset(self, x: np.ndarray, y: np.ndarray, store_norm_info: bool = False):
         """Modifies internal mean and std to help denormalization later."""
-        st_x, st_y = None, None
-        if store_norm_info:
-            st_x, st_y = 'x', 'y'
-        x = self._std_normalize(x, st_x)
-        y = self._std_normalize(y, st_y)
+        x = self._std_normalize(x, 'x', store_norm_info)
+        y = self._std_normalize(y, 'y', store_norm_info)
 
         return TimeSeriesDataset(x, y, seq_len=self._seq_len, pred_len=self._pred_len)
 
@@ -147,13 +197,15 @@ class TSMWrapper:
             if epoch > 10 and early_stopper(val_loss):
                 print("\r" + " " * 75, end="")
                 print(f"\rEarly stopping...\n\tEpoch {epoch+1:3d}: train loss: {train_loss:.6f}, "
-                      f"val loss: {val_loss:.6f}{text_test_loss}")
+                      f"val loss: {val_loss:.6f}{text_test_loss}", end="")
                 break
 
             if test_loader:
                 print("\r" + " " * 75, end="")
                 print(f"\r\tEpoch {epoch+1:3d}: train loss: {train_loss:.6f}, "
                       f"val loss: {val_loss:.6f}{text_test_loss}", end="")
+
+        print()  # to get newline after the last epoch
         return train_losses, val_losses, test_losses
 
     def validate_ts_model(self, x: np.ndarray, y: np.ndarray, epochs: int, loss_fn=nn.MSELoss(),
@@ -166,7 +218,7 @@ class TSMWrapper:
 
         for i, (train_idxs, test_val_idxs) in enumerate(ts_cv.split(x)):
             print(f"[Fold {i+1}] BEGIN")
-            self._model.__init__()
+            self.reinit_model()
 
             test_val_idxs = test_val_idxs[:-len(test_val_idxs)//5]
             test_idxs = test_val_idxs[-len(test_val_idxs)//5:]
@@ -264,4 +316,3 @@ class TSMWrapper:
             axs[i].plot(test_losses[i], label="test_loss", color="r")
             axs[i].legend()
         plt.show()
-
