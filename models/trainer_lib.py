@@ -12,6 +12,14 @@ if torch.cuda.is_available():
     TRAINER_LIB_DEVICE = torch.device("cuda")
 
 
+def mape(p, t):
+    return np.mean(np.abs(p - t) / t)
+
+
+def mpe(p, t):
+    return np.mean((p - t) / t)
+
+
 def format_country_wide_dataset(file: str):
     df: pd.DataFrame = pd.read_csv(
         file,
@@ -170,7 +178,7 @@ class TSMWrapper:
         return total_loss / len(data_loader)
 
     def train(self, train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader | None,
-              epochs=100, lr=0.001, optimizer=None, loss_fn=nn.MSELoss(), es_p=10, es_d=0.):
+              epochs=100, lr=0.001, optimizer=None, loss_fn=nn.MSELoss(), es_p=10, es_d=0., verbose=1):
         optimizer: torch.optim.Optimizer = optimizer or torch.optim.Adam(self._model.parameters(), lr=lr)
 
         has_test: bool = test_loader is not None
@@ -191,25 +199,26 @@ class TSMWrapper:
             if test_loss:
                 test_losses.append(test_loss)
 
-            text_test_loss: str = "" if not has_test else f", test loss: {test_loss:.6f}"  # to make printing shorter
+            text_test_loss: str = "" if not has_test else f", test loss: {test_loss:.6f}"  # to make printing easier
 
             # stop condition
-            if epoch > 10 and early_stopper(val_loss):
+            if verbose > 0 and epoch > 10 and early_stopper(val_loss):
                 print("\r" + " " * 75, end="")
                 print(f"\rEarly stopping...\n\tEpoch {epoch+1:3d}: train loss: {train_loss:.6f}, "
                       f"val loss: {val_loss:.6f}{text_test_loss}", end="")
                 break
 
-            if test_loader:
+            if verbose > 0 and test_loader:
                 print("\r" + " " * 75, end="")
                 print(f"\r\tEpoch {epoch+1:3d}: train loss: {train_loss:.6f}, "
                       f"val loss: {val_loss:.6f}{text_test_loss}", end="")
 
-        print()  # to get newline after the last epoch
+        if verbose > 0:
+            print()  # to get newline after the last epoch
         return train_losses, val_losses, test_losses
 
     def validate_ts_model(self, x: np.ndarray, y: np.ndarray, epochs: int, loss_fn=nn.MSELoss(),
-                          lr=0.001, es_p=10, es_d=0., n_splits=5):
+                          lr=0.001, es_p=10, es_d=0., n_splits=5, verbose=2):
         ts_cv = TimeSeriesSplit(n_splits=n_splits)
 
         train_losses = []
@@ -217,7 +226,8 @@ class TSMWrapper:
         test_losses = []
 
         for i, (train_idxs, test_val_idxs) in enumerate(ts_cv.split(x)):
-            print(f"[Fold {i+1}] BEGIN")
+            if verbose > 0:
+                print(f"[Fold {i+1}] BEGIN", end="\n" if verbose > 1 else " ")
             self.reinit_model()
 
             test_val_idxs = test_val_idxs[:-len(test_val_idxs)//5]
@@ -234,14 +244,15 @@ class TSMWrapper:
             val_loader: DataLoader = DataLoader(val_dataset, batch_size=128, shuffle=False)
             test_loader: DataLoader = DataLoader(test_dataset, batch_size=128, shuffle=False)
 
-            train_loss, test_loss, val_loss = self.train(train_loader, val_loader, test_loader, epochs=epochs,
-                                                         lr=lr, loss_fn=loss_fn, es_p=es_p, es_d=es_d)
+            train_loss, test_loss, val_loss = self.train(train_loader, val_loader, test_loader, epochs=epochs, lr=lr,
+                                                         loss_fn=loss_fn, es_p=es_p, es_d=es_d, verbose=verbose-1)
 
             train_losses.append(train_loss)
             val_losses.append(val_loss)
             test_losses.append(test_loss)
 
-            print(f"[Fold {i+1}] END")
+            if verbose > 0:
+                print(f"[Fold {i+1}] END" if verbose > 1 else "- END")
 
         return train_losses, val_losses, test_losses
 
@@ -267,14 +278,8 @@ class TSMWrapper:
 
     @staticmethod
     def print_evaluation_info(preds: np.ndarray, true: np.ndarray):
-        def mape(p, t):
-            return np.mean(np.abs(p - t) / t)
-
-        def mpe(p, t):
-            return np.mean((p - t) / t)
-
         loss = nn.MSELoss()(torch.tensor(preds), torch.tensor(true)).item()
-        print("Losses after denormalization:")
+        print("Overall loss metrics:")
         print(f"MAE: {np.mean(np.abs(preds - true)):8.4f}")
         print(f"MSE: {loss:10.4f}")
         print(f"RMSE: {math_sqrt(loss):8.4f}")
@@ -293,12 +298,14 @@ class TSMWrapper:
         TSMWrapper.plot_predictions(preds[-1000:], true[-1000:])
 
     @staticmethod
-    def plot_predictions(y_true: np.ndarray, y_pred: np.ndarray):
+    def plot_predictions(y_pred: np.ndarray, y_true: np.ndarray):
         if y_true.shape != y_pred.shape:
             raise ValueError("Shapes of y_true and y_pred must be equal")
 
         n_of_plots = y_true.shape[1]
         fig, axs = plt.subplots(nrows=n_of_plots, ncols=1, figsize=(30, 12*n_of_plots))
+        if n_of_plots == 1:
+            axs = [axs]  # if we have 1 plot, the returned axs is not a list, but a single object
         for i in range(n_of_plots):
             axs[i].set_title(f"Predicting ahead by {i+1} hour")
             axs[i].plot(y_true[:, i], label="true", color="g")
