@@ -8,6 +8,7 @@ from math import sqrt as math_sqrt
 import matplotlib.pyplot as plt
 import pandas as pd
 import os
+from copy import deepcopy
 
 TRAINER_LIB_DEVICE = torch.device("cpu")
 if torch.cuda.is_available():
@@ -69,13 +70,14 @@ class EarlyStopper:
         self.counter: int = 0
         self.min_validation_loss: float = np.inf
         self.__model: nn.Module | None = model
+        self.__state_dict = None
 
     def __call__(self, validation_loss):
         if validation_loss < self.min_validation_loss:
             self.min_validation_loss = validation_loss
             self.counter = 0
             if self.__model is not None:
-                torch.save(self.__model.state_dict(), "checkpoint.pt")
+                self.__state_dict = deepcopy(self.__model.state_dict())
         elif validation_loss > (self.min_validation_loss + self.min_delta):
             self.counter += 1
             if self.counter >= self.patience:
@@ -83,12 +85,8 @@ class EarlyStopper:
         return False
 
     def load_checkpoint(self):
-        if self.__model is not None and os.path.exists("checkpoint.pt"):
-            self.__model.load_state_dict(torch.load("checkpoint.pt"))
-
-    def __del__(self):
-        if os.path.exists("checkpoint.pt"):
-            os.remove("checkpoint.pt")
+        if self.__model is not None and self.__state_dict is not None:
+            self.__model.load_state_dict(self.__state_dict)
 
 
 class Grid:
