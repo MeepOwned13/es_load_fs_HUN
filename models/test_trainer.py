@@ -30,7 +30,7 @@ y = df['el_load'].to_numpy(dtype=np.float32)
 
 gi = trainer_lib.Grid({
     'lr': [0.001],
-    'epochs': [10],
+    'epochs': [15],
     'batch_size': [64],
 })
 
@@ -38,5 +38,5 @@ model = Model()
 wrap: trainer_lib.MIMOTSWrapper = trainer_lib.MIMOTSWrapper(model, 1, 1)
 b_p, b_s = wrap.grid_search(X, y, gi)
 wrap.init_strategy()
-wrap.train_strategy(X[:-5000], y[:-5000], X[-5000:-3000], y[-5000:-3000], X[-3000:], y[-3000:], **b_p)
+wrap.train_strategy(X[:-5000], y[:-5000], X[-5000:-3000], y[-5000:-3000], X[-3000:], y[-3000:], **b_p, es_p=5, cp=True)
 wrap.print_evaluation_info(*wrap.predict(X[-3000:], y[-3000:]))

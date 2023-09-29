@@ -7,6 +7,7 @@ from sklearn.model_selection import TimeSeriesSplit
 from math import sqrt as math_sqrt
 import matplotlib.pyplot as plt
 import pandas as pd
+import os
 
 TRAINER_LIB_DEVICE = torch.device("cpu")
 if torch.cuda.is_available():
@@ -61,21 +62,33 @@ class TimeSeriesDataset(Dataset):
 
 
 class EarlyStopper:
-    def __init__(self, patience=1, min_delta=0.):
+    def __init__(self, patience=1, min_delta=0., model: nn.Module | None = None):
+        """Passing model is optional, used for checkpointing"""
         self.patience: int = patience
         self.min_delta: float = min_delta
         self.counter: int = 0
         self.min_validation_loss: float = np.inf
+        self.__model: nn.Module | None = model
 
     def __call__(self, validation_loss):
         if validation_loss < self.min_validation_loss:
             self.min_validation_loss = validation_loss
             self.counter = 0
+            if self.__model is not None:
+                torch.save(self.__model.state_dict(), "checkpoint.pt")
         elif validation_loss > (self.min_validation_loss + self.min_delta):
             self.counter += 1
             if self.counter >= self.patience:
                 return True
         return False
+
+    def load_checkpoint(self):
+        if self.__model is not None and os.path.exists("checkpoint.pt"):
+            self.__model.load_state_dict(torch.load("checkpoint.pt"))
+
+    def __del__(self):
+        if os.path.exists("checkpoint.pt"):
+            os.remove("checkpoint.pt")
 
 
 class Grid:
@@ -257,7 +270,7 @@ class TSMWrapper(ABC):
     @abstractmethod
     def train_strategy(self, x_train: np.ndarray, y_train: np.ndarray, x_val: np.ndarray, y_val: np.ndarray,
                        x_test: np.ndarray | None = None, y_test: np.ndarray | None = None, epochs=100, lr=0.001,
-                       optimizer=None, batch_size=128, loss_fn=nn.MSELoss(), es_p=10, es_d=0., verbose=1):
+                       optimizer=None, batch_size=128, loss_fn=nn.MSELoss(), es_p=10, es_d=0., verbose=1, cp=False):
         pass
 
     @abstractmethod
@@ -303,7 +316,7 @@ class TSMWrapper(ABC):
     @staticmethod
     def train_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader,
                     test_loader: DataLoader | None = None, epochs=100, lr=0.001, optimizer=None,
-                    loss_fn=nn.MSELoss(), es_p=10, es_d=0., verbose=1):
+                    loss_fn=nn.MSELoss(), es_p=10, es_d=0., verbose=1, cp=False):
         optimizer: torch.optim.Optimizer = optimizer or torch.optim.Adam(model.parameters(), lr=lr)
 
         has_test: bool = test_loader is not None
@@ -312,7 +325,7 @@ class TSMWrapper(ABC):
         val_losses: list = []
         test_losses: list = [] if has_test else None
 
-        early_stopper = EarlyStopper(patience=es_p, min_delta=es_d)
+        early_stopper = EarlyStopper(patience=es_p, min_delta=es_d, model=None if not cp else model)
         for epoch in range(epochs):
             train_loss: float = TSMWrapper.train_epoch(model, train_loader, lr=lr, optimizer=optimizer, loss_fn=loss_fn)
             train_losses.append(train_loss)
@@ -341,6 +354,7 @@ class TSMWrapper(ABC):
 
         if verbose > 0:
             print()  # to get newline after the last epoch
+        early_stopper.load_checkpoint()
         return train_losses, val_losses, test_losses
 
     @staticmethod
@@ -424,7 +438,7 @@ class MIMOTSWrapper(TSMWrapper):
 
     def train_strategy(self, x_train: np.ndarray, y_train: np.ndarray, x_val: np.ndarray, y_val: np.ndarray,
                        x_test: np.ndarray | None = None, y_test: np.ndarray | None = None, epochs=100, lr=0.001,
-                       optimizer=None, batch_size=128, loss_fn=nn.MSELoss(), es_p=10, es_d=0., verbose=1):
+                       optimizer=None, batch_size=128, loss_fn=nn.MSELoss(), es_p=10, es_d=0., verbose=1, cp=False):
 
         train_dataset: TimeSeriesDataset = self._make_ts_dataset(x_train, y_train, store_norm_info=True)
         train_loader: DataLoader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
@@ -438,7 +452,8 @@ class MIMOTSWrapper(TSMWrapper):
             test_loader: DataLoader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
         return TSMWrapper.train_model(self._model, train_loader, val_loader, test_loader, epochs=epochs, lr=lr,
-                                      optimizer=optimizer, loss_fn=loss_fn, es_p=es_p, es_d=es_d, verbose=verbose)
+                                      optimizer=optimizer, loss_fn=loss_fn, es_p=es_p, es_d=es_d,
+                                      verbose=verbose, cp=cp)
 
     def _switch_to_eval_mode(self):
         self._model.eval()
