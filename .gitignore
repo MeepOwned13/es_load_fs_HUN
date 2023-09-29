@@ -179,5 +179,5 @@ omsz_data/
 mavir_data/
 temp_data/
 temp/
-!data/final_dataframe.csv
+!data/country_data.csv
 !data/feature_selection.csv

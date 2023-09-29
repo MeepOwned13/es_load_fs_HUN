@@ -1,3 +1,4 @@
+from abc import ABC, abstractmethod
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -77,7 +78,7 @@ class EarlyStopper:
         return False
 
 
-class GridIterator:
+class Grid:
     def __init__(self, grid: dict):
         self._keys: list = list(grid.keys())
         self._values: list = list(grid.values())
@@ -101,9 +102,8 @@ class GridIterator:
             raise StopIteration()
 
 
-class TSMWrapper:
-    def __init__(self, model: nn.Module, seq_len: int, pred_len: int):
-        self._model: nn.Module = model.to(TRAINER_LIB_DEVICE)
+class TSMWrapper(ABC):
+    def __init__(self, seq_len: int, pred_len: int):
         self._seq_len: int = seq_len
         self._pred_len: int = pred_len
 
@@ -111,6 +111,8 @@ class TSMWrapper:
         self._x_norm_std: np.ndarray | None = None
         self._y_norm_mean: np.ndarray | None = None
         self._y_norm_std: np.ndarray | None = None
+
+    # region protected methods
 
     def _std_normalize(self, arr: np.ndarray, which: str, store: bool = False) -> np.ndarray:
         """which can be: 'x' or 'y' or None, if it remains unset, no standard normalization info is stored"""
@@ -164,85 +166,12 @@ class TSMWrapper:
 
         return TimeSeriesDataset(x, y, seq_len=self._seq_len, pred_len=self._pred_len)
 
-    def reinit_model(self):
-        self._model.__init__()
-        self._model = self._model.to(TRAINER_LIB_DEVICE)
+    # endregion
 
-    def train_epoch(self, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
-        optimizer = optimizer or torch.optim.Adam(self._model.parameters(), lr=lr)
+    # region public methods
 
-        self._model.train()
-        total_loss: float = 0
-
-        for features, labels in data_loader:
-            features = features.to(TRAINER_LIB_DEVICE)
-            labels = labels.to(TRAINER_LIB_DEVICE)
-
-            optimizer.zero_grad()
-            outputs = self._model(features)
-            loss = loss_fn(outputs, labels)
-            loss.backward()
-            optimizer.step()
-
-            total_loss += loss.item()
-        return total_loss / len(data_loader)
-
-    def test_model(self, data_loader: DataLoader, loss_fn=nn.MSELoss()):
-        self._model.eval()
-        total_loss: float = 0
-
-        with torch.no_grad():
-            for features, labels in data_loader:
-                features = features.to(TRAINER_LIB_DEVICE)
-                labels = labels.to(TRAINER_LIB_DEVICE)
-                outputs = self._model(features)
-
-                loss = loss_fn(outputs, labels)
-                total_loss += loss.item()
-        return total_loss / len(data_loader)
-
-    def train(self, train_loader: DataLoader, val_loader: DataLoader, test_loader: DataLoader | None,
-              epochs=100, lr=0.001, optimizer=None, loss_fn=nn.MSELoss(), es_p=10, es_d=0., verbose=1):
-        optimizer: torch.optim.Optimizer = optimizer or torch.optim.Adam(self._model.parameters(), lr=lr)
-
-        has_test: bool = test_loader is not None
-
-        train_losses: list = []
-        val_losses: list = []
-        test_losses: list = [] if has_test else None
-
-        early_stopper = EarlyStopper(patience=es_p, min_delta=es_d)
-        for epoch in range(epochs):
-            train_loss: float = self.train_epoch(train_loader, lr=lr, optimizer=optimizer, loss_fn=loss_fn)
-            train_losses.append(train_loss)
-
-            val_loss: float = self.test_model(val_loader, loss_fn=loss_fn)
-            val_losses.append(val_loss)
-
-            test_loss: float | None = None if not has_test else self.test_model(test_loader, loss_fn=loss_fn)
-            if test_loss:
-                test_losses.append(test_loss)
-
-            text_test_loss: str = "" if not has_test else f", test loss: {test_loss:.6f}"  # to make printing easier
-
-            # stop condition
-            if verbose > 0 and epoch > 10 and early_stopper(val_loss):
-                print("\r" + " " * 75, end="")
-                print(f"\rEarly stopping...\n\tEpoch {epoch+1:03d}: train loss: {train_loss:.6f}, "
-                      f"val loss: {val_loss:.6f}{text_test_loss}", end="")
-                break
-
-            if verbose > 0 and test_loader:
-                print("\r" + " " * 75, end="")
-                print(f"\r\tEpoch {epoch+1:03d}: train loss: {train_loss:.6f}, "
-                      f"val loss: {val_loss:.6f}{text_test_loss}", end="")
-
-        if verbose > 0:
-            print()  # to get newline after the last epoch
-        return train_losses, val_losses, test_losses
-
-    def validate_ts_model(self, x: np.ndarray, y: np.ndarray, epochs: int, loss_fn=nn.MSELoss(),
-                          lr=0.001, batch_size=128, es_p=10, es_d=0., n_splits=5, verbose=2):
+    def validate_ts_strategy(self, x: np.ndarray, y: np.ndarray, epochs: int, loss_fn=nn.MSELoss(),
+                             lr=0.001, batch_size=128, es_p=10, es_d=0., n_splits=5, verbose=2):
         ts_cv = TimeSeriesSplit(n_splits=n_splits)
 
         train_losses = []
@@ -252,7 +181,6 @@ class TSMWrapper:
         for i, (train_idxs, test_val_idxs) in enumerate(ts_cv.split(x)):
             if verbose > 0:
                 print(f"[Fold {i+1}] BEGIN", end="\n" if verbose > 1 else " ")
-            self.reinit_model()
 
             test_val_idxs = test_val_idxs[:-len(test_val_idxs)//5]
             test_idxs = test_val_idxs[-len(test_val_idxs)//5:]
@@ -260,16 +188,11 @@ class TSMWrapper:
             x_train, x_val, x_test = x[train_idxs], x[test_val_idxs], x[test_idxs]
             y_train, y_val, y_test = y[train_idxs], y[test_val_idxs], y[test_idxs]
 
-            train_dataset: TimeSeriesDataset = self._make_ts_dataset(x_train, y_train, store_norm_info=True)
-            val_dataset: TimeSeriesDataset = self._make_ts_dataset(x_val, y_val)
-            test_dataset: TimeSeriesDataset = self._make_ts_dataset(x_test, y_test)
-
-            train_loader: DataLoader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
-            val_loader: DataLoader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-            test_loader: DataLoader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-
-            train_loss, val_loss, test_loss = self.train(train_loader, val_loader, test_loader, epochs=epochs, lr=lr,
-                                                         loss_fn=loss_fn, es_p=es_p, es_d=es_d, verbose=verbose-1)
+            self.init_strategy()
+            train_loss, val_loss, test_loss = self.train_strategy(x_train, y_train, x_val, y_val, x_test, y_test,
+                                                                  epochs=epochs, lr=lr, batch_size=batch_size,
+                                                                  loss_fn=loss_fn, es_p=es_p, es_d=es_d,
+                                                                  verbose=verbose-1)
 
             train_losses.append(train_loss)
             val_losses.append(val_loss)
@@ -280,13 +203,15 @@ class TSMWrapper:
 
         return train_losses, val_losses, test_losses
 
-    def grid_search(self, x: np.ndarray, y: np.ndarray, g: GridIterator, loss_fn=nn.MSELoss(), verbose=1):
+    def grid_search(self, x: np.ndarray, y: np.ndarray, g: Grid, loss_fn=nn.MSELoss(), verbose=1):
         best_params = None
         best_score = np.inf
         for i, params in enumerate(g):
             if verbose > 0:
                 print(f"[Grid search {i+1:03d}] BEGIN", end=" ")
-            _, _, test_losses = self.validate_ts_model(x, y, loss_fn=loss_fn, verbose=0, **params)
+
+            self._setup_strategy(**params)
+            _, _, test_losses = self.validate_ts_strategy(x, y, loss_fn=loss_fn, verbose=0, **params)
 
             test_losses = [ls[-1] for ls in test_losses]
             score = sum(test_losses) / len(test_losses)
@@ -300,8 +225,8 @@ class TSMWrapper:
 
         return best_params, best_score
 
-    def predict_ts_model(self, x: np.ndarray, y: np.ndarray):
-        self._model.eval()
+    def predict(self, x: np.ndarray, y: np.ndarray):
+        self._switch_to_eval_mode()
         dataset: TimeSeriesDataset = self._make_ts_dataset(x, y)
         loader: DataLoader = DataLoader(dataset, batch_size=64, shuffle=False)
 
@@ -310,15 +235,128 @@ class TSMWrapper:
 
         with torch.no_grad():
             for features, labels in loader:
-                features = features.to(TRAINER_LIB_DEVICE)
-                preds = self._model(features)
-
-                preds = preds.cpu().numpy()
+                preds = self._predict_strategy(features)
                 labels = labels.numpy()
                 predictions = np.vstack((predictions, preds))
                 true = np.vstack((true, labels))
 
         return self._std_denormalize(predictions, 'y'), self._std_denormalize(true, 'y')
+
+    # endregion
+
+    # region abstract methods
+
+    @abstractmethod
+    def init_strategy(self):
+        """
+        Used to reset the strategy to its initial state.
+        Used in cross validation. Should initialize the model(s).
+        """
+        pass
+
+    @abstractmethod
+    def train_strategy(self, x_train: np.ndarray, y_train: np.ndarray, x_val: np.ndarray, y_val: np.ndarray,
+                       x_test: np.ndarray | None = None, y_test: np.ndarray | None = None, epochs=100, lr=0.001,
+                       optimizer=None, batch_size=128, loss_fn=nn.MSELoss(), es_p=10, es_d=0., verbose=1):
+        pass
+
+    @abstractmethod
+    def _setup_strategy(self, **kwargs):
+        """
+        This method should initialize any parameters that are needed for the strategy to work.
+        Training parameters should not be initalized here.
+        """
+        pass
+
+    @abstractmethod
+    def _switch_to_eval_mode(self):
+        pass
+
+    @abstractmethod
+    def _predict_strategy(self, features) -> np.ndarray:
+        pass
+
+    # endregion
+
+    # region static methods
+
+    @staticmethod
+    def train_epoch(model: nn.Module, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
+        optimizer = optimizer or torch.optim.Adam(model.parameters(), lr=lr)
+
+        model.train()
+        total_loss: float = 0
+
+        for features, labels in data_loader:
+            features = features.to(TRAINER_LIB_DEVICE)
+            labels = labels.to(TRAINER_LIB_DEVICE)
+
+            optimizer.zero_grad()
+            outputs = model(features)
+            loss = loss_fn(outputs, labels)
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+        return total_loss / len(data_loader)
+
+    @staticmethod
+    def train_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader,
+                    test_loader: DataLoader | None = None, epochs=100, lr=0.001, optimizer=None,
+                    loss_fn=nn.MSELoss(), es_p=10, es_d=0., verbose=1):
+        optimizer: torch.optim.Optimizer = optimizer or torch.optim.Adam(model.parameters(), lr=lr)
+
+        has_test: bool = test_loader is not None
+
+        train_losses: list = []
+        val_losses: list = []
+        test_losses: list = [] if has_test else None
+
+        early_stopper = EarlyStopper(patience=es_p, min_delta=es_d)
+        for epoch in range(epochs):
+            train_loss: float = TSMWrapper.train_epoch(model, train_loader, lr=lr, optimizer=optimizer, loss_fn=loss_fn)
+            train_losses.append(train_loss)
+
+            val_loss: float = TSMWrapper.test_model(model, val_loader, loss_fn=loss_fn)
+            val_losses.append(val_loss)
+
+            test_loss: float | None = None if not has_test else TSMWrapper.test_model(model, test_loader,
+                                                                                      loss_fn=loss_fn)
+            if test_loss:
+                test_losses.append(test_loss)
+
+            text_test_loss: str = "" if not has_test else f", test loss: {test_loss:.6f}"  # to make printing easier
+
+            # stop condition
+            if verbose > 0 and epoch > 10 and early_stopper(val_loss):
+                print("\r" + " " * 75, end="")
+                print(f"\rEarly stopping...\n\tEpoch {epoch+1:03d}: train loss: {train_loss:.6f}, "
+                      f"val loss: {val_loss:.6f}{text_test_loss}", end="")
+                break
+
+            if verbose > 0:
+                print("\r" + " " * 75, end="")
+                print(f"\r\tEpoch {epoch+1:03d}: train loss: {train_loss:.6f}, "
+                      f"val loss: {val_loss:.6f}{text_test_loss}", end="")
+
+        if verbose > 0:
+            print()  # to get newline after the last epoch
+        return train_losses, val_losses, test_losses
+
+    @staticmethod
+    def test_model(model: nn.Module, data_loader: DataLoader, loss_fn=nn.MSELoss()):
+        model.eval()
+        total_loss: float = 0
+
+        with torch.no_grad():
+            for features, labels in data_loader:
+                features = features.to(TRAINER_LIB_DEVICE)
+                labels = labels.to(TRAINER_LIB_DEVICE)
+                outputs = model(features)
+
+                loss = loss_fn(outputs, labels)
+                total_loss += loss.item()
+        return total_loss / len(data_loader)
 
     @staticmethod
     def print_evaluation_info(preds: np.ndarray, true: np.ndarray):
@@ -367,3 +405,47 @@ class TSMWrapper:
             axs[i].plot(test_losses[i], label="test_loss", color="r")
             axs[i].legend()
         plt.show()
+
+    # endregion
+
+
+class MIMOTSWrapper(TSMWrapper):
+    def __init__(self, model: nn.Module, seq_len: int, pred_len: int):
+        super(MIMOTSWrapper, self).__init__(seq_len=seq_len, pred_len=pred_len)
+        self._model = model.to(TRAINER_LIB_DEVICE)
+
+    # region override methods
+    def init_strategy(self):
+        self._model.__init__()
+        self._model = self._model.to(TRAINER_LIB_DEVICE)
+
+    def _setup_strategy(self, **kwargs):
+        pass
+
+    def train_strategy(self, x_train: np.ndarray, y_train: np.ndarray, x_val: np.ndarray, y_val: np.ndarray,
+                       x_test: np.ndarray | None = None, y_test: np.ndarray | None = None, epochs=100, lr=0.001,
+                       optimizer=None, batch_size=128, loss_fn=nn.MSELoss(), es_p=10, es_d=0., verbose=1):
+
+        train_dataset: TimeSeriesDataset = self._make_ts_dataset(x_train, y_train, store_norm_info=True)
+        train_loader: DataLoader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
+
+        val_dataset: TimeSeriesDataset = self._make_ts_dataset(x_val, y_val)
+        val_loader: DataLoader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+        test_loader: DataLoader | None = None
+        if x_test is not None and y_test is not None:
+            test_dataset: TimeSeriesDataset = self._make_ts_dataset(x_test, y_test)
+            test_loader: DataLoader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+        return TSMWrapper.train_model(self._model, train_loader, val_loader, test_loader, epochs=epochs, lr=lr,
+                                      optimizer=optimizer, loss_fn=loss_fn, es_p=es_p, es_d=es_d, verbose=verbose)
+
+    def _switch_to_eval_mode(self):
+        self._model.eval()
+
+    def _predict_strategy(self, features: torch.Tensor) -> np.ndarray:
+        features = features.to(TRAINER_LIB_DEVICE)
+        preds = self._model(features)
+        return preds.cpu().numpy()
+
+    # endregion

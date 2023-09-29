@@ -23,16 +23,20 @@ class Model(nn.Module):
         return x
 
 
-df = trainer_lib.load_country_wide_dataset('../data/final_dataframe.csv')
+df = trainer_lib.load_country_wide_dataset('../data/country_data.csv')
 
 X = df.to_numpy(dtype=np.float32)
 y = df['el_load'].to_numpy(dtype=np.float32)
 
-gi = trainer_lib.GridIterator({
-    'lr': [0.01, 0.001],
-    'epochs': [5, 20],
+gi = trainer_lib.Grid({
+    'lr': [0.001],
+    'epochs': [10],
+    'batch_size': [64],
 })
 
 model = Model()
-wrap: trainer_lib.TSMWrapper = trainer_lib.TSMWrapper(model, 1, 1)
+wrap: trainer_lib.MIMOTSWrapper = trainer_lib.MIMOTSWrapper(model, 1, 1)
 b_p, b_s = wrap.grid_search(X, y, gi)
+wrap.init_strategy()
+wrap.train_strategy(X[:-5000], y[:-5000], X[-5000:-3000], y[-5000:-3000], X[-3000:], y[-3000:], **b_p)
+wrap.print_evaluation_info(*wrap.predict(X[-3000:], y[-3000:]))
