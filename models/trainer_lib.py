@@ -7,7 +7,6 @@ from sklearn.model_selection import TimeSeriesSplit
 from math import sqrt as math_sqrt
 import matplotlib.pyplot as plt
 import pandas as pd
-import os
 from copy import deepcopy
 
 TRAINER_LIB_DEVICE = torch.device("cpu")
