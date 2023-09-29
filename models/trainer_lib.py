@@ -434,7 +434,8 @@ class MIMOTSWrapper(TSMWrapper):
         self._model = self._model.to(TRAINER_LIB_DEVICE)
 
     def _setup_strategy(self, **kwargs):
-        pass
+        if kwargs['model'] is not None:
+            self._model = kwargs['model'](**kwargs).to(TRAINER_LIB_DEVICE)
 
     def train_strategy(self, x_train: np.ndarray, y_train: np.ndarray, x_val: np.ndarray, y_val: np.ndarray,
                        x_test: np.ndarray | None = None, y_test: np.ndarray | None = None, epochs=100, lr=0.001,
