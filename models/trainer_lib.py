@@ -182,7 +182,7 @@ class TSMWrapper(ABC):
     # region public methods
 
     def validate_ts_strategy(self, x: np.ndarray, y: np.ndarray, epochs: int, loss_fn=nn.MSELoss(),
-                             lr=0.001, batch_size=128, es_p=10, es_d=0., n_splits=5, verbose=2):
+                             lr=0.001, batch_size=128, es_p=10, es_d=0., n_splits=5, verbose=2, **kwargs):
         ts_cv = TimeSeriesSplit(n_splits=n_splits)
 
         train_losses = []
@@ -441,7 +441,8 @@ class MIMOTSWrapper(TSMWrapper):
 
     def train_strategy(self, x_train: np.ndarray, y_train: np.ndarray, x_val: np.ndarray, y_val: np.ndarray,
                        x_test: np.ndarray | None = None, y_test: np.ndarray | None = None, epochs=100, lr=0.001,
-                       optimizer=None, batch_size=128, loss_fn=nn.MSELoss(), es_p=10, es_d=0., verbose=1, cp=False):
+                       optimizer=None, batch_size=128, loss_fn=nn.MSELoss(), es_p=10, es_d=0.,
+                       verbose=1, cp=False, **kwargs):
 
         train_dataset: TimeSeriesDataset = self._make_ts_dataset(x_train, y_train, store_norm_info=True)
         train_loader: DataLoader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
