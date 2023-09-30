@@ -224,10 +224,11 @@ class TSMWrapper(ABC):
         best_score = np.inf
         for i, params in enumerate(g):
             if verbose > 0:
-                print(f"[Grid search {i+1:03d}] BEGIN", end=" ")
+                print(f"[Grid search {i+1:03d}] BEGIN",
+                      end=f" - params: {params}\n" if verbose > 1 else " ")
 
             self._setup_strategy(**params)
-            _, _, _, metric_losses = self.validate_ts_strategy(x, y, loss_fn=loss_fn, verbose=0, **params)
+            _, _, _, metric_losses = self.validate_ts_strategy(x, y, loss_fn=loss_fn, verbose=verbose-2, **params)
 
             score = sum(metric_losses) / len(metric_losses)
 
@@ -236,7 +237,8 @@ class TSMWrapper(ABC):
             best_score = score if improved else best_score
 
             if verbose > 0:
-                print(f"- END - Score: {score:.8f} {'*' if improved else ''}")
+                print(f"[Grid search {i+1:03d}]" if verbose > 1 else f"-",
+                      f"END - Score: {score:.8f} {'*' if improved else ''}")
 
         return best_params, best_score
 
