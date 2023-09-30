@@ -7,7 +7,7 @@ from sklearn.model_selection import TimeSeriesSplit
 from math import sqrt as math_sqrt
 import matplotlib.pyplot as plt
 import pandas as pd
-import os
+from copy import deepcopy
 
 TRAINER_LIB_DEVICE = torch.device("cpu")
 if torch.cuda.is_available():
@@ -69,13 +69,14 @@ class EarlyStopper:
         self.counter: int = 0
         self.min_validation_loss: float = np.inf
         self.__model: nn.Module | None = model
+        self.__state_dict = None
 
     def __call__(self, validation_loss):
         if validation_loss < self.min_validation_loss:
             self.min_validation_loss = validation_loss
             self.counter = 0
             if self.__model is not None:
-                torch.save(self.__model.state_dict(), "checkpoint.pt")
+                self.__state_dict = deepcopy(self.__model.state_dict())
         elif validation_loss > (self.min_validation_loss + self.min_delta):
             self.counter += 1
             if self.counter >= self.patience:
@@ -83,12 +84,9 @@ class EarlyStopper:
         return False
 
     def load_checkpoint(self):
-        if self.__model is not None and os.path.exists("checkpoint.pt"):
-            self.__model.load_state_dict(torch.load("checkpoint.pt"))
-
-    def __del__(self):
-        if os.path.exists("checkpoint.pt"):
-            os.remove("checkpoint.pt")
+        if self.__model is not None and self.__state_dict is not None:
+            with torch.no_grad():
+                self.__model.load_state_dict(self.__state_dict)
 
 
 class Grid:
@@ -190,6 +188,7 @@ class TSMWrapper(ABC):
         train_losses = []
         val_losses = []
         test_losses = []
+        metric_losses = []
 
         for i, (train_idxs, test_val_idxs) in enumerate(ts_cv.split(x)):
             if verbose > 0:
@@ -207,14 +206,18 @@ class TSMWrapper(ABC):
                                                                   loss_fn=loss_fn, es_p=es_p, es_d=es_d,
                                                                   verbose=verbose-1)
 
+            pred, true = self.predict(x_test, y_test)
+            metric_loss = loss_fn(torch.tensor(pred), torch.tensor(true)).item()
+
             train_losses.append(train_loss)
             val_losses.append(val_loss)
             test_losses.append(test_loss)
+            metric_losses.append(metric_loss)
 
             if verbose > 0:
-                print(f"[Fold {i+1}] END" if verbose > 1 else "- END")
+                print(f"[Fold {i+1}] END" if verbose > 1 else "- END", f"- Metric loss: {metric_loss:.8f}")
 
-        return train_losses, val_losses, test_losses
+        return train_losses, val_losses, test_losses, metric_losses
 
     def grid_search(self, x: np.ndarray, y: np.ndarray, g: Grid, loss_fn=nn.MSELoss(), verbose=1):
         best_params = None
@@ -224,10 +227,9 @@ class TSMWrapper(ABC):
                 print(f"[Grid search {i+1:03d}] BEGIN", end=" ")
 
             self._setup_strategy(**params)
-            _, _, test_losses = self.validate_ts_strategy(x, y, loss_fn=loss_fn, verbose=0, **params)
+            _, _, _, metric_losses = self.validate_ts_strategy(x, y, loss_fn=loss_fn, verbose=0, **params)
 
-            test_losses = [ls[-1] for ls in test_losses]
-            score = sum(test_losses) / len(test_losses)
+            score = sum(metric_losses) / len(metric_losses)
 
             improved = score < best_score
             best_params = params if improved else best_params
@@ -434,7 +436,7 @@ class MIMOTSWrapper(TSMWrapper):
         self._model = self._model.to(TRAINER_LIB_DEVICE)
 
     def _setup_strategy(self, **kwargs):
-        if kwargs['model'] is not None:
+        if kwargs.get('model', None) is not None:
             self._model = kwargs['model'](**kwargs).to(TRAINER_LIB_DEVICE)
 
     def train_strategy(self, x_train: np.ndarray, y_train: np.ndarray, x_val: np.ndarray, y_val: np.ndarray,
