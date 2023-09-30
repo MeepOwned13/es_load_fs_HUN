@@ -245,8 +245,8 @@ class TSMWrapper(ABC):
         dataset: TimeSeriesDataset = self._make_ts_dataset(x, y)
         loader: DataLoader = DataLoader(dataset, batch_size=64, shuffle=False)
 
-        predictions = np.zeros((0, self._seq_len), dtype=np.float32)
-        true = np.zeros((0, self._seq_len), dtype=np.float32)
+        predictions = np.zeros((0, self._pred_len), dtype=np.float32)
+        true = np.zeros((0, self._pred_len), dtype=np.float32)
 
         with torch.no_grad():
             for features, labels in loader:
