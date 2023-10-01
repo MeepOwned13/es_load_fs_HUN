@@ -8,6 +8,8 @@ from math import sqrt as math_sqrt
 import matplotlib.pyplot as plt
 import pandas as pd
 from copy import deepcopy
+from math import sqrt
+from timeit import default_timer as timer
 
 TRAINER_LIB_DEVICE = torch.device("cpu")
 if torch.cuda.is_available():
@@ -182,7 +184,7 @@ class TSMWrapper(ABC):
     # region public methods
 
     def validate_ts_strategy(self, x: np.ndarray, y: np.ndarray, epochs: int, loss_fn=nn.MSELoss(),
-                             lr=0.001, batch_size=128, es_p=10, es_d=0., n_splits=5, verbose=2, **kwargs):
+                             lr=0.001, batch_size=128, es_p=10, es_d=0., n_splits=5, verbose=2, cp=True, **kwargs):
         ts_cv = TimeSeriesSplit(n_splits=n_splits)
 
         train_losses = []
@@ -190,8 +192,10 @@ class TSMWrapper(ABC):
         test_losses = []
         metric_losses = []
 
+        st_time = None
         for i, (train_idxs, test_val_idxs) in enumerate(ts_cv.split(x)):
             if verbose > 0:
+                st_time = timer()
                 print(f"[Fold {i+1}] BEGIN", end="\n" if verbose > 1 else " ")
 
             test_val_idxs = test_val_idxs[:-len(test_val_idxs)//5]
@@ -204,10 +208,10 @@ class TSMWrapper(ABC):
             train_loss, val_loss, test_loss = self.train_strategy(x_train, y_train, x_val, y_val, x_test, y_test,
                                                                   epochs=epochs, lr=lr, batch_size=batch_size,
                                                                   loss_fn=loss_fn, es_p=es_p, es_d=es_d,
-                                                                  verbose=verbose-1)
+                                                                  verbose=verbose-1, cp=cp)
 
             pred, true = self.predict(x_test, y_test)
-            metric_loss = loss_fn(torch.tensor(pred), torch.tensor(true)).item()
+            metric_loss = sqrt(nn.MSELoss()(torch.tensor(pred), torch.tensor(true)).item())
 
             train_losses.append(train_loss)
             val_losses.append(val_loss)
@@ -215,7 +219,9 @@ class TSMWrapper(ABC):
             metric_losses.append(metric_loss)
 
             if verbose > 0:
-                print(f"[Fold {i+1}] END" if verbose > 1 else "- END", f"- Metric loss: {metric_loss:.8f}")
+                elapsed = round((timer() - st_time) / 60, 1)
+                print(f"[Fold {i+1}] END" if verbose > 1 else "- END",
+                      f"- RMSE loss: {metric_loss:.3f} - Time: {elapsed} min.")
 
         return train_losses, val_losses, test_losses, metric_losses
 
@@ -299,7 +305,7 @@ class TSMWrapper(ABC):
 
     @staticmethod
     def train_epoch(model: nn.Module, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
-        optimizer = optimizer or torch.optim.Adam(model.parameters(), lr=lr)
+        optimizer = optimizer or torch.optim.NAdam(model.parameters(), lr=lr)
 
         model.train()
         total_loss: float = 0
@@ -321,7 +327,7 @@ class TSMWrapper(ABC):
     def train_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader,
                     test_loader: DataLoader | None = None, epochs=100, lr=0.001, optimizer=None,
                     loss_fn=nn.MSELoss(), es_p=10, es_d=0., verbose=1, cp=False):
-        optimizer: torch.optim.Optimizer = optimizer or torch.optim.Adam(model.parameters(), lr=lr)
+        optimizer: torch.optim.Optimizer = optimizer or torch.optim.NAdam(model.parameters(), lr=lr)
 
         has_test: bool = test_loader is not None
 
@@ -347,7 +353,7 @@ class TSMWrapper(ABC):
             # stop condition
             if verbose > 0 and epoch > 10 and early_stopper(val_loss):
                 print("\r" + " " * 75, end="")
-                print(f"\rEarly stopping...\n\tEpoch {epoch+1:03d}: train loss: {train_loss:.6f}, "
+                print(f"\rEarly stopping... Epoch {epoch+1:03d}: train loss: {train_loss:.6f}, "
                       f"val loss: {val_loss:.6f}{text_test_loss}", end="")
                 break
 
