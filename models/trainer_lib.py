@@ -476,3 +476,20 @@ class MIMOTSWrapper(TSMWrapper):
         return preds.cpu().numpy()
 
     # endregion
+
+
+class GaussianNoise(nn.Module):
+    """From: https://discuss.pytorch.org/t/writing-a-simple-gaussian-noise-layer-in-pytorch/4694/4"""
+
+    def __init__(self, sigma=0.1, is_relative_detach=True):
+        super(GaussianNoise, self).__init__()
+        self.sigma = sigma
+        self.is_relative_detach = is_relative_detach
+        self.register_buffer('noise', torch.tensor(0))
+
+    def forward(self, x):
+        if self.training and self.sigma != 0:
+            scale = self.sigma * x.detach() if self.is_relative_detach else self.sigma * x
+            noise = self.noise.expand(*x.size()).float().normal_() * scale
+            return x + noise
+        return x
