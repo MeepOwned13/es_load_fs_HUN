@@ -213,6 +213,9 @@ class TSMWrapper(ABC):
             pred, true = self.predict(x_test, y_test)
             metric_loss = sqrt(nn.MSELoss()(torch.tensor(pred), torch.tensor(true)).item())
 
+            pred, true = self.predict(x_test, y_test)
+            metric_loss = loss_fn(torch.tensor(pred), torch.tensor(true)).item()
+
             train_losses.append(train_loss)
             val_losses.append(val_loss)
             test_losses.append(test_loss)
