@@ -193,16 +193,17 @@ class TSMWrapper(ABC):
         metric_losses = []
 
         st_time = None
-        for i, (train_idxs, test_val_idxs) in enumerate(ts_cv.split(x)):
+        for i, (train_idxs, test_idxs) in enumerate(ts_cv.split(x)):
             if verbose > 0:
                 st_time = timer()
                 print(f"[Fold {i+1}] BEGIN", end="\n" if verbose > 1 else " ")
 
-            test_val_idxs = test_val_idxs[:-len(test_val_idxs)//5]
-            test_idxs = test_val_idxs[-len(test_val_idxs)//5:]
+            train_val_sp: int = len(x) // (n_splits+1) // 2
+            val_idxs = train_idxs[-train_val_sp:]
+            train_idxs = train_idxs[:-train_val_sp]
 
-            x_train, x_val, x_test = x[train_idxs], x[test_val_idxs], x[test_idxs]
-            y_train, y_val, y_test = y[train_idxs], y[test_val_idxs], y[test_idxs]
+            x_train, x_val, x_test = x[train_idxs], x[val_idxs], x[test_idxs]
+            y_train, y_val, y_test = y[train_idxs], y[val_idxs], y[test_idxs]
 
             self.init_strategy()
             train_loss, val_loss, test_loss = self.train_strategy(x_train, y_train, x_val, y_val, x_test, y_test,
