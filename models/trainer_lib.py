@@ -402,7 +402,7 @@ class TSMWrapper(ABC):
                   f"MAPE: {mape(preds[:, i], true[:, i]) * 100:6.3f}%, "
                   f"MPE: {mpe(preds[:, i], true[:, i]) * 100:6.3f}%")
 
-        TSMWrapper.plot_predictions(preds[-1000:], true[-1000:])
+        TSMWrapper.plot_predictions(preds, true)
 
     @staticmethod
     def plot_predictions(y_pred: np.ndarray, y_true: np.ndarray):
@@ -410,14 +410,28 @@ class TSMWrapper(ABC):
             raise ValueError("Shapes of y_true and y_pred must be equal")
 
         n_of_plots = y_true.shape[1]
-        fig, axs = plt.subplots(nrows=n_of_plots, ncols=1, figsize=(30, 12*n_of_plots))
+        fig, axs = plt.subplots(nrows=n_of_plots, ncols=1, figsize=(50, 12*n_of_plots))
         if n_of_plots == 1:
             axs = [axs]  # if we have 1 plot, the returned axs is not a list, but a single object
         for i in range(n_of_plots):
+            true = y_true[:, i]
+            pred = y_pred[:, i]
+
+            mse = nn.MSELoss(reduction='none')(torch.tensor(pred), torch.tensor(true)).numpy()
+            rmse = np.sqrt(mse)
+            mae = np.abs(pred - true)
+
             axs[i].set_title(f"Predicting ahead by {i+1} hour")
-            axs[i].plot(y_true[:, i], label="true", color="g")
-            axs[i].plot(y_pred[:, i], label="pred", color="r")
-            axs[i].legend()
+            axs[i].plot(true, label="true", color="green")
+            axs[i].plot(pred, label="pred", color="red")
+
+            ax2 = axs[i].twinx()
+            ax2.set_ylim(0, np.max(mae) * 5)
+            ax2.bar(np.arange(rmse.shape[0]), rmse, label="rmse", color="lightblue")
+            ax2.bar(np.arange(rmse.shape[0]), mae, label="mae", color="purple")
+
+            axs[i].legend(loc="upper right")
+            ax2.legend(loc="lower right")
         plt.show()
 
     @staticmethod
