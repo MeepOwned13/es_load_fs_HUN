@@ -201,7 +201,7 @@ class TSMWrapper(ABC):
                 st_time = timer()
                 print(f"[Fold {i+1}] BEGIN", end="\n" if verbose > 1 else " ")
 
-            train_val_sp: int = len(x) // (n_splits+1) // min(2, val_mod)
+            train_val_sp: int = len(x) // (n_splits+1) // max(2, val_mod)
             val_idxs = train_idxs[-train_val_sp:]
             train_idxs = train_idxs[:-train_val_sp]
 
