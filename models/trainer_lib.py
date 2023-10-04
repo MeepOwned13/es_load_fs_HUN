@@ -152,6 +152,9 @@ class TSMWrapper(ABC):
 
                 mean, std = self._y_norm_mean, self._y_norm_std
 
+        # to avoid division by zero, 0 std happens for example when we are looking at a single year
+        std = np.where(std == 0, 1.0, std)
+
         return (arr - mean) / std
 
     def _std_denormalize(self, arr: np.ndarray, which: str) -> np.ndarray:
