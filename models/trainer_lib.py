@@ -186,7 +186,7 @@ class TSMWrapper(ABC):
 
     # region public methods
 
-    def validate_ts_strategy(self, x: np.ndarray, y: np.ndarray, epochs: int, loss_fn=nn.MSELoss(), val_mod=2,
+    def validate_ts_strategy(self, x: np.ndarray, y: np.ndarray, epochs: int, loss_fn=nn.MSELoss(), val_mod=8,
                              lr=0.001, batch_size=128, es_p=10, es_d=0., n_splits=5, verbose=2, cp=True, **kwargs):
         ts_cv = TimeSeriesSplit(n_splits=n_splits)
 
@@ -420,8 +420,6 @@ class TSMWrapper(ABC):
             true = y_true[:, i]
             pred = y_pred[:, i]
 
-            mse = nn.MSELoss(reduction='none')(torch.tensor(pred), torch.tensor(true)).numpy()
-            rmse = np.sqrt(mse)
             mae = np.abs(pred - true)
 
             axs[i].set_title(f"Predicting ahead by {i+1} hour")
@@ -430,8 +428,7 @@ class TSMWrapper(ABC):
 
             ax2 = axs[i].twinx()
             ax2.set_ylim(0, np.max(mae) * 5)
-            ax2.bar(np.arange(rmse.shape[0]), rmse, label="rmse", color="lightblue")
-            ax2.bar(np.arange(rmse.shape[0]), mae, label="mae", color="purple")
+            ax2.bar(np.arange(mae.shape[0]), mae, label="mae", color="purple")
 
             axs[i].legend(loc="upper right")
             ax2.legend(loc="lower right")
@@ -494,20 +491,3 @@ class MIMOTSWrapper(TSMWrapper):
         return preds.cpu().numpy()
 
     # endregion
-
-
-class GaussianNoise(nn.Module):
-    """From: https://discuss.pytorch.org/t/writing-a-simple-gaussian-noise-layer-in-pytorch/4694/4"""
-
-    def __init__(self, sigma=0.1, is_relative_detach=True):
-        super(GaussianNoise, self).__init__()
-        self.sigma = sigma
-        self.is_relative_detach = is_relative_detach
-        self.register_buffer('noise', torch.tensor(0))
-
-    def forward(self, x):
-        if self.training and self.sigma != 0:
-            scale = self.sigma * x.detach() if self.is_relative_detach else self.sigma * x
-            noise = self.noise.expand(*x.size()).float().normal_() * scale
-            return x + noise
-        return x
