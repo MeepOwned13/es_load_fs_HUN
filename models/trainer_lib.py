@@ -308,6 +308,16 @@ class TSMWrapper(ABC):
     # region static methods
 
     @staticmethod
+    def reset_all_weights(model: nn.Module) -> None:
+        @torch.no_grad()
+        def weight_reset(m: nn.Module):
+            reset_parameters = getattr(m, "reset_parameters", None)
+            if callable(reset_parameters):
+                m.reset_parameters()
+
+        model.apply(fn=weight_reset)
+
+    @staticmethod
     def train_epoch(model: nn.Module, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
         optimizer = optimizer or torch.optim.NAdam(model.parameters(), lr=lr)
 
@@ -456,7 +466,7 @@ class MIMOTSWrapper(TSMWrapper):
 
     # region override methods
     def init_strategy(self):
-        self._model.__init__()
+        self.reset_all_weights(self._model)
         self._model = self._model.to(TRAINER_LIB_DEVICE)
 
     def _setup_strategy(self, **kwargs):
