@@ -355,10 +355,11 @@ class TSMWrapper(ABC):
             text_test_loss: str = "" if not has_test else f", test loss: {test_loss:.6f}"  # to make printing easier
 
             # stop condition
-            if verbose > 0 and epoch > 10 and early_stopper(val_loss):
-                print("\r" + " " * 75, end="")
-                print(f"\rEarly stopping... Epoch {epoch+1:03d}: train loss: {train_loss:.6f}, "
-                      f"val loss: {val_loss:.6f}{text_test_loss}", end="")
+            if epoch > 10 and early_stopper(val_loss):
+                if verbose > 0:
+                    print("\r" + " " * 75, end="")
+                    print(f"\rEarly stopping... Epoch {epoch+1:03d}: train loss: {train_loss:.6f}, "
+                          f"val loss: {val_loss:.6f}{text_test_loss}", end="")
                 break
 
             if verbose > 0:
