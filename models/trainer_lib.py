@@ -241,6 +241,7 @@ class TSMWrapper(ABC):
             _, _, _, metric_losses = self.validate_ts_strategy(x, y, loss_fn=loss_fn, verbose=verbose-2, **params)
 
             score = sum(metric_losses) / len(metric_losses)
+            score_no_1st = sum(metric_losses[1:]) / (len(metric_losses) - 1)
 
             improved = score < best_score
             best_params = params if improved else best_params
@@ -248,7 +249,7 @@ class TSMWrapper(ABC):
 
             if verbose > 0:
                 print(f"[Grid search {i+1:03d}]" if verbose > 1 else f"-",
-                      f"END - Score: {score:.8f} {'*' if improved else ''}")
+                      f"END - Score: {score:.8f} {'* ' if improved else ''}Without 1st split: {score_no_1st}")
 
         return best_params, best_score
 
