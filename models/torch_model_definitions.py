@@ -93,19 +93,20 @@ class GRUEncoder(nn.Module):
                .requires_grad_().to(MODEL_DEFINITION_DEVICE))
         _, hidden = self.gru(x, h_0)
 
-        return hidden.permute(1, 0, 2)
+        return hidden
 
 
 class GRUDecoder(nn.Module):
-    def __init__(self, embedded_size, num_layers=1, dropout=0.0):
+    def __init__(self, features, embedded_size, num_layers=1, dropout=0.0):
         super(GRUDecoder, self).__init__()
-        self.gru = nn.GRU(embedded_size, embedded_size, num_layers,
+        self.gru = nn.GRU(features, embedded_size, num_layers,
                           dropout=dropout, bidirectional=False, batch_first=True)
         self.flatten = nn.Flatten(1, -1)
         self.fc = nn.Linear(embedded_size * num_layers, 1)
 
     def forward(self, x, h):
-        x, hidden = self.gru(x, h)
+        _, hidden = self.gru(x, h)
+        x = hidden.permute(1, 0, 2)
         x = self.flatten(x)
         x = self.fc(x)
 
@@ -119,19 +120,17 @@ class Seq2seq(nn.Module):
         self.features = features
         self.embedding_size = embedding_size
         self.enc = GRUEncoder(features, embedding_size, 2, dropout=dropout)
-        self.dec = GRUDecoder(embedding_size, 2, dropout=dropout)
+        self.dec = GRUDecoder(features, embedding_size, 2, dropout=dropout)
 
     def forward(self, x):
         batch_size = x.shape[0]
-        enc_out = self.enc(x)
-        hidden = (torch.zeros(2, batch_size, self.embedding_size)
-                  .requires_grad_().to(MODEL_DEFINITION_DEVICE))
-        out = torch.zeros(batch_size, self.pred_len).to(MODEL_DEFINITION_DEVICE)
+        hidden = self.enc(x)
+        output = torch.zeros(batch_size, self.pred_len).to(MODEL_DEFINITION_DEVICE)
 
         for i in range(self.pred_len):
-            x, hidden = self.dec(enc_out, hidden)
-            out[:, i] = x[:, 0]
+            out, hidden = self.dec(x, hidden)
+            output[:, i] = out[:, 0]
 
-        return out
+        return output
 
 # endregion
