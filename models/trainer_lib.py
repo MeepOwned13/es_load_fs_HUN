@@ -187,7 +187,7 @@ class TSMWrapper(ABC):
     # region public methods
 
     def validate_ts_strategy(self, x: np.ndarray, y: np.ndarray, epochs: int, loss_fn=nn.MSELoss(), val_mod=8,
-                             lr=0.001, batch_size=128, es_p=10, es_d=0., n_splits=5, verbose=2, cp=True, **kwargs):
+                             lr=0.001, batch_size=128, es_p=10, es_d=0., n_splits=6, verbose=2, cp=True, **kwargs):
         ts_cv = TimeSeriesSplit(n_splits=n_splits)
 
         train_losses = []
