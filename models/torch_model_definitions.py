@@ -2,6 +2,10 @@ import torch
 import torch.nn as nn
 from torch.nn.utils import weight_norm
 
+MODEL_DEFINITION_DEVICE = torch.device("cpu")
+if torch.cuda.is_available():
+    MODEL_DEFINITION_DEVICE = torch.device("cuda")
+
 
 # region GaussianNoise, from: https://discuss.pytorch.org/t/writing-a-simple-gaussian-noise-layer-in-pytorch/4694/4
 
@@ -69,5 +73,64 @@ class TemporalConvNet(nn.Module):
 
     def forward(self, x):
         return self.network(x)
+
+# endregion
+
+
+# region Time-series Encoder-Decoder
+
+class GRUEncoder(nn.Module):
+    def __init__(self, features, embedding_size, num_layers=1, dropout=0.0):
+        super(GRUEncoder, self).__init__()
+        self.hidden_size = embedding_size
+        self.num_layers = num_layers
+        self.gru = nn.GRU(features, embedding_size, num_layers,
+                          dropout=dropout, bidirectional=False, batch_first=True)
+
+    def forward(self, x):
+        batch_size = x.shape[0]
+        h_0 = (torch.zeros(self.num_layers, batch_size, self.hidden_size)
+               .requires_grad_().to(MODEL_DEFINITION_DEVICE))
+        _, hidden = self.gru(x, h_0)
+
+        return hidden
+
+
+class GRUDecoder(nn.Module):
+    def __init__(self, features, embedded_size, num_layers=1, dropout=0.0):
+        super(GRUDecoder, self).__init__()
+        self.gru = nn.GRU(features, embedded_size, num_layers,
+                          dropout=dropout, bidirectional=False, batch_first=True)
+        self.flatten = nn.Flatten(1, -1)
+        self.fc = nn.Linear(embedded_size * num_layers, 1)
+
+    def forward(self, x, h):
+        _, hidden = self.gru(x, h)
+        x = hidden.permute(1, 0, 2)
+        x = self.flatten(x)
+        x = self.fc(x)
+
+        return x, hidden
+
+
+class Seq2seq(nn.Module):
+    def __init__(self, features=11, pred_len=3, embedding_size=64, dropout=0.2):
+        super(Seq2seq, self).__init__()
+        self.pred_len = pred_len
+        self.features = features
+        self.embedding_size = embedding_size
+        self.enc = GRUEncoder(features, embedding_size, 2, dropout=dropout)
+        self.dec = GRUDecoder(features, embedding_size, 2, dropout=dropout)
+
+    def forward(self, x):
+        batch_size = x.shape[0]
+        hidden = self.enc(x)
+        output = torch.zeros(batch_size, self.pred_len).to(MODEL_DEFINITION_DEVICE)
+
+        for i in range(self.pred_len):
+            out, hidden = self.dec(x, hidden)
+            output[:, i] = out[:, 0]
+
+        return output
 
 # endregion
