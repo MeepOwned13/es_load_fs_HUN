@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, TensorDataset
 from torch import nn
 from sklearn.model_selection import TimeSeriesSplit
 from math import sqrt as math_sqrt
@@ -53,6 +53,21 @@ class TimeSeriesDataset(Dataset):
     def __init__(self, x, y, seq_len=5, pred_len=1):
         self.X = x
         self.y = y
+        self.seq_len = seq_len
+        self.pred_len = pred_len
+
+    def __len__(self):
+        return len(self.X) - self.seq_len - self.pred_len
+
+    def __getitem__(self, idx):
+        return self.X[idx: idx + self.seq_len], self.y[idx + self.seq_len: idx + self.seq_len + self.pred_len]
+
+
+class TimeSeriesTensorDataset(TensorDataset):
+    def __init__(self, x, y, seq_len=5, pred_len=1):
+        super(TimeSeriesTensorDataset, self).__init__(torch.tensor(x), torch.tensor(y))
+        self.X = self.tensors[0].to(TRAINER_LIB_DEVICE)
+        self.y = self.tensors[1].to(TRAINER_LIB_DEVICE)
         self.seq_len = seq_len
         self.pred_len = pred_len
 
@@ -180,7 +195,10 @@ class TSMWrapper(ABC):
         x = self._std_normalize(x, 'x', store_norm_info)
         y = self._std_normalize(y, 'y', store_norm_info)
 
-        return TimeSeriesDataset(x, y, seq_len=self._seq_len, pred_len=self._pred_len)
+        if TRAINER_LIB_DEVICE == torch.device('cpu'):
+            return TimeSeriesDataset(x, y, seq_len=self._seq_len, pred_len=self._pred_len)
+        else:
+            return TimeSeriesTensorDataset(x, y, seq_len=self._seq_len, pred_len=self._pred_len)
 
     # endregion
 
@@ -264,7 +282,7 @@ class TSMWrapper(ABC):
         with torch.no_grad():
             for features, labels in loader:
                 preds = self._predict_strategy(features)
-                labels = labels.numpy()
+                labels = labels.cpu().numpy()
                 predictions = np.vstack((predictions, preds))
                 true = np.vstack((true, labels))
 
@@ -479,15 +497,15 @@ class MIMOTSWrapper(TSMWrapper):
                        optimizer=None, batch_size=128, loss_fn=nn.MSELoss(), es_p=10, es_d=0.,
                        verbose=1, cp=False, **kwargs):
 
-        train_dataset: TimeSeriesDataset = self._make_ts_dataset(x_train, y_train, store_norm_info=True)
+        train_dataset: Dataset = self._make_ts_dataset(x_train, y_train, store_norm_info=True)
         train_loader: DataLoader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
 
-        val_dataset: TimeSeriesDataset = self._make_ts_dataset(x_val, y_val)
+        val_dataset: Dataset = self._make_ts_dataset(x_val, y_val)
         val_loader: DataLoader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
         test_loader: DataLoader | None = None
         if x_test is not None and y_test is not None:
-            test_dataset: TimeSeriesDataset = self._make_ts_dataset(x_test, y_test)
+            test_dataset: Dataset = self._make_ts_dataset(x_test, y_test)
             test_loader: DataLoader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
         return TSMWrapper.train_model(self._model, train_loader, val_loader, test_loader, epochs=epochs, lr=lr,
