@@ -530,7 +530,6 @@ class S2STSWRAPPER(MIMOTSWrapper):
 
     def _train_epoch(self, model: nn.Module, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
         self.teacher_forcing_ratio = max(0.0, self.teacher_forcing_ratio - 0.01)
-        print(f"Teacher forcing ratio: {self.teacher_forcing_ratio:.2f}")
-        super()._train_epoch(model, data_loader, lr, optimizer, loss_fn)
+        return super()._train_epoch(model, data_loader, lr, optimizer, loss_fn)
 
     # endregion
