@@ -529,6 +529,10 @@ class S2STSWRAPPER(MIMOTSWrapper):
 
     # region override methods
 
+    def init_strategy(self):
+        super().init_strategy()
+        self.teacher_forcing_ratio = 0.5
+
     def _train_epoch(self, model: nn.Module, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
         optimizer = optimizer or torch.optim.NAdam(model.parameters(), lr=lr)
         self.teacher_forcing_ratio = max(0.0, self.teacher_forcing_ratio - self.teacher_forcing_decay)
