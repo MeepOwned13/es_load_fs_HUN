@@ -141,7 +141,7 @@ class Seq2seq(nn.Module):
             out, _, hidden = self.dec(dec_input, hidden)
             output[:, i] = out[:, 0]
             if y is not None and torch.rand(1) < teacher_forcing:
-                dec_input = torch.cat((dec_input, y[:, i].unsqeeze(1)), dim=1)
+                dec_input = torch.cat((dec_input, y[:, i].reshape(-1, 1, 1)), dim=1)
             else:
                 dec_input = torch.cat((dec_input, out.unsqueeze(1)), dim=1)
 

@@ -522,14 +522,31 @@ class MIMOTSWrapper(TSMWrapper):
 
 
 class S2STSWRAPPER(MIMOTSWrapper):
-    def __init__(self, model: nn.Module, seq_len: int, pred_len: int):
+    def __init__(self, model: nn.Module, seq_len: int, pred_len: int, teacher_forcing_decay=0.01):
         super(S2STSWRAPPER, self).__init__(model, seq_len, pred_len)
         self.teacher_forcing_ratio = 0.5
+        self.teacher_forcing_decay = teacher_forcing_decay
 
     # region override methods
 
     def _train_epoch(self, model: nn.Module, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
-        self.teacher_forcing_ratio = max(0.0, self.teacher_forcing_ratio - 0.01)
-        return super()._train_epoch(model, data_loader, lr, optimizer, loss_fn)
+        optimizer = optimizer or torch.optim.NAdam(model.parameters(), lr=lr)
+        self.teacher_forcing_ratio = max(0.0, self.teacher_forcing_ratio - self.teacher_forcing_decay)
+
+        model.train()
+        total_loss: float = 0
+
+        for features, labels in data_loader:
+            features = features.to(TRAINER_LIB_DEVICE)
+            labels = labels.to(TRAINER_LIB_DEVICE)
+
+            optimizer.zero_grad()
+            outputs = model(features, labels, self.teacher_forcing_ratio)
+            loss = loss_fn(outputs, labels)
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+        return total_loss / len(data_loader)
 
     # endregion
