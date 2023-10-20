@@ -200,6 +200,69 @@ class TSMWrapper(ABC):
         else:
             return TimeSeriesTensorDataset(x, y, seq_len=self._seq_len, pred_len=self._pred_len)
 
+    def _train_epoch(self, model: nn.Module, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
+        optimizer = optimizer or torch.optim.NAdam(model.parameters(), lr=lr)
+
+        model.train()
+        total_loss: float = 0
+
+        for features, labels in data_loader:
+            features = features.to(TRAINER_LIB_DEVICE)
+            labels = labels.to(TRAINER_LIB_DEVICE)
+
+            optimizer.zero_grad()
+            outputs = model(features)
+            loss = loss_fn(outputs, labels)
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+        return total_loss / len(data_loader)
+
+    def _train_model(self, model: nn.Module, train_loader: DataLoader, val_loader: DataLoader,
+                     test_loader: DataLoader | None = None, epochs=100, lr=0.001, optimizer=None,
+                     loss_fn=nn.MSELoss(), es_p=10, es_d=0., verbose=1, cp=False):
+        optimizer: torch.optim.Optimizer = optimizer or torch.optim.NAdam(model.parameters(), lr=lr)
+
+        has_test: bool = test_loader is not None
+
+        train_losses: list = []
+        val_losses: list = []
+        test_losses: list = [] if has_test else None
+
+        early_stopper = EarlyStopper(patience=es_p, min_delta=es_d, model=None if not cp else model)
+        for epoch in range(epochs):
+            train_loss: float = self._train_epoch(model, train_loader, lr=lr, optimizer=optimizer, loss_fn=loss_fn)
+            train_losses.append(train_loss)
+
+            val_loss: float = TSMWrapper.test_model(model, val_loader, loss_fn=loss_fn)
+            val_losses.append(val_loss)
+
+            test_loss: float | None = None if not has_test else TSMWrapper.test_model(model, test_loader,
+                                                                                      loss_fn=loss_fn)
+            if test_loss:
+                test_losses.append(test_loss)
+
+            text_test_loss: str = "" if not has_test else f", test loss: {test_loss:.6f}"  # to make printing easier
+
+            # stop condition
+            if epoch > 10 and early_stopper(val_loss):
+                if verbose > 0:
+                    print("\r" + " " * 75, end="")
+                    print(f"\rEarly stopping... Epoch {epoch+1:03d}: train loss: {train_loss:.6f}, "
+                          f"val loss: {val_loss:.6f}{text_test_loss}", end="")
+                break
+
+            if verbose > 0:
+                print("\r" + " " * 75, end="")
+                print(f"\r\tEpoch {epoch+1:03d}: train loss: {train_loss:.6f}, "
+                      f"val loss: {val_loss:.6f}{text_test_loss}", end="")
+
+        if verbose > 0:
+            print()  # to get newline after the last epoch
+        early_stopper.load_checkpoint()
+        return train_losses, val_losses, test_losses
+
     # endregion
 
     # region public methods
@@ -337,71 +400,6 @@ class TSMWrapper(ABC):
         model.apply(fn=weight_reset)
 
     @staticmethod
-    def train_epoch(model: nn.Module, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
-        optimizer = optimizer or torch.optim.NAdam(model.parameters(), lr=lr)
-
-        model.train()
-        total_loss: float = 0
-
-        for features, labels in data_loader:
-            features = features.to(TRAINER_LIB_DEVICE)
-            labels = labels.to(TRAINER_LIB_DEVICE)
-
-            optimizer.zero_grad()
-            outputs = model(features)
-            loss = loss_fn(outputs, labels)
-            loss.backward()
-            optimizer.step()
-
-            total_loss += loss.item()
-        return total_loss / len(data_loader)
-
-    @staticmethod
-    def train_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader,
-                    test_loader: DataLoader | None = None, epochs=100, lr=0.001, optimizer=None,
-                    loss_fn=nn.MSELoss(), es_p=10, es_d=0., verbose=1, cp=False):
-        optimizer: torch.optim.Optimizer = optimizer or torch.optim.NAdam(model.parameters(), lr=lr)
-
-        has_test: bool = test_loader is not None
-
-        train_losses: list = []
-        val_losses: list = []
-        test_losses: list = [] if has_test else None
-
-        early_stopper = EarlyStopper(patience=es_p, min_delta=es_d, model=None if not cp else model)
-        for epoch in range(epochs):
-            train_loss: float = TSMWrapper.train_epoch(model, train_loader, lr=lr, optimizer=optimizer, loss_fn=loss_fn)
-            train_losses.append(train_loss)
-
-            val_loss: float = TSMWrapper.test_model(model, val_loader, loss_fn=loss_fn)
-            val_losses.append(val_loss)
-
-            test_loss: float | None = None if not has_test else TSMWrapper.test_model(model, test_loader,
-                                                                                      loss_fn=loss_fn)
-            if test_loss:
-                test_losses.append(test_loss)
-
-            text_test_loss: str = "" if not has_test else f", test loss: {test_loss:.6f}"  # to make printing easier
-
-            # stop condition
-            if epoch > 10 and early_stopper(val_loss):
-                if verbose > 0:
-                    print("\r" + " " * 75, end="")
-                    print(f"\rEarly stopping... Epoch {epoch+1:03d}: train loss: {train_loss:.6f}, "
-                          f"val loss: {val_loss:.6f}{text_test_loss}", end="")
-                break
-
-            if verbose > 0:
-                print("\r" + " " * 75, end="")
-                print(f"\r\tEpoch {epoch+1:03d}: train loss: {train_loss:.6f}, "
-                      f"val loss: {val_loss:.6f}{text_test_loss}", end="")
-
-        if verbose > 0:
-            print()  # to get newline after the last epoch
-        early_stopper.load_checkpoint()
-        return train_losses, val_losses, test_losses
-
-    @staticmethod
     def test_model(model: nn.Module, data_loader: DataLoader, loss_fn=nn.MSELoss()):
         model.eval()
         total_loss: float = 0
@@ -508,9 +506,9 @@ class MIMOTSWrapper(TSMWrapper):
             test_dataset: Dataset = self._make_ts_dataset(x_test, y_test)
             test_loader: DataLoader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-        return TSMWrapper.train_model(self._model, train_loader, val_loader, test_loader, epochs=epochs, lr=lr,
-                                      optimizer=optimizer, loss_fn=loss_fn, es_p=es_p, es_d=es_d,
-                                      verbose=verbose, cp=cp)
+        return self._train_model(self._model, train_loader, val_loader, test_loader, epochs=epochs, lr=lr,
+                                 optimizer=optimizer, loss_fn=loss_fn, es_p=es_p, es_d=es_d,
+                                 verbose=verbose, cp=cp)
 
     def _switch_to_eval_mode(self):
         self._model.eval()
@@ -519,5 +517,20 @@ class MIMOTSWrapper(TSMWrapper):
         features = features.to(TRAINER_LIB_DEVICE)
         preds = self._model(features)
         return preds.cpu().numpy()
+
+    # endregion
+
+
+class S2STSWRAPPER(MIMOTSWrapper):
+    def __init__(self, model: nn.Module, seq_len: int, pred_len: int):
+        super(S2STSWRAPPER, self).__init__(model, seq_len, pred_len)
+        self.teacher_forcing_ratio = 0.5
+
+    # region override methods
+
+    def _train_epoch(self, model: nn.Module, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
+        self.teacher_forcing_ratio = max(0.0, self.teacher_forcing_ratio - 0.01)
+        print(f"Teacher forcing ratio: {self.teacher_forcing_ratio:.2f}")
+        super()._train_epoch(model, data_loader, lr, optimizer, loss_fn)
 
     # endregion

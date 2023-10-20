@@ -92,16 +92,16 @@ class GRUEncoder(nn.Module):
         batch_size = x.shape[0]
         h_0 = (torch.zeros(self.num_layers * self.h_n_dim, batch_size, self.hidden_size)
                .requires_grad_().to(MODEL_DEFINITION_DEVICE))
-        x, hidden = self.gru(x, h_0)
+        _, hidden = self.gru(x, h_0)
 
-        return x, hidden
+        return hidden
 
 
 class GRUDecoder(nn.Module):
-    def __init__(self, embedded_size, num_layers=1, bidirectional=False, dropout=0.0):
+    def __init__(self, features, embedded_size, num_layers=1, bidirectional=False, dropout=0.0):
         super(GRUDecoder, self).__init__()
         self.h_n_dim = 2 if bidirectional else 1
-        self.gru = nn.GRU(embedded_size * self.h_n_dim, embedded_size, num_layers,
+        self.gru = nn.GRU(features, embedded_size, num_layers,
                           dropout=dropout, bidirectional=bidirectional, batch_first=True)
         self.flatten = nn.Flatten(1, -1)
         self.dropout = nn.Dropout(dropout)
@@ -119,7 +119,8 @@ class GRUDecoder(nn.Module):
 
 
 class Seq2seq(nn.Module):
-    def __init__(self, features=11, pred_len=3, embedding_size=64, num_layers=1, bidirectional=False, dropout=0.2, **kwargs):
+    def __init__(self, features=11, pred_len=3, embedding_size=64, num_layers=1, bidirectional=False,
+                 dropout=0.2, **kwargs):
         super(Seq2seq, self).__init__()
         self.pred_len = pred_len
         self.features = features
@@ -127,17 +128,22 @@ class Seq2seq(nn.Module):
         self.num_layers = num_layers
         self.enc = GRUEncoder(features, embedding_size, num_layers, bidirectional=bidirectional,
                               dropout=dropout if num_layers > 1 else 0.0)
-        self.dec = GRUDecoder(embedding_size, num_layers, bidirectional=bidirectional,
+        self.dec = GRUDecoder(1, embedding_size, num_layers, bidirectional=bidirectional,
                               dropout=dropout if num_layers > 1 else 0.0)
 
-    def forward(self, x):
+    def forward(self, x, y=None, teacher_forcing=0.0):
         batch_size = x.shape[0]
-        x, hidden = self.enc(x)
+        hidden = self.enc(x)
+        dec_input = x[:, -1, 0].reshape(-1, 1, 1)  # this will be y_prev in my case
         output = torch.zeros(batch_size, self.pred_len).to(MODEL_DEFINITION_DEVICE)
 
         for i in range(self.pred_len):
-            out, x, hidden = self.dec(x, hidden)
+            out, _, hidden = self.dec(dec_input, hidden)
             output[:, i] = out[:, 0]
+            if y is not None and torch.rand(1) < teacher_forcing:
+                dec_input = torch.cat((dec_input, y[:, i].unsqeeze(1)), dim=1)
+            else:
+                dec_input = torch.cat((dec_input, out.unsqueeze(1)), dim=1)
 
         return output
 
