@@ -24,7 +24,7 @@ def mpe(p, t):
     return np.mean((p - t) / t)
 
 
-def load_country_wide_dataset(file: str):
+def load_country_wide_dataset(file: str, nodrop=False):
     df: pd.DataFrame = pd.read_csv(
         file,
         parse_dates=['Time'],
@@ -45,6 +45,10 @@ def load_country_wide_dataset(file: str):
 
     df['el_load_lag24'] = df['el_load'].shift(24, fill_value=0)
 
+    if nodrop:
+        return df
+
+    # returns features that were selected by the feature selection algorithm using Random Forest
     return df[['el_load', 'prec', 'grad', 'holiday', 'weekend', 'hour',
                'weekday', 'dayofyear', 'month', 'year', 'el_load_lag24']]
 

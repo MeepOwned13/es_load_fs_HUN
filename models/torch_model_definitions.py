@@ -80,16 +80,18 @@ class TemporalConvNet(nn.Module):
 # region Time-series Encoder-Decoder
 
 class GRUEncoder(nn.Module):
-    def __init__(self, features, embedding_size, num_layers=1, bidirectional=False, dropout=0.0):
+    def __init__(self, features, embedding_size, num_layers=1, bidirectional=False, dropout=0.0, noise=0.0):
         super(GRUEncoder, self).__init__()
         self.hidden_size = embedding_size
         self.num_layers = num_layers
         self.h_n_dim = 2 if bidirectional else 1
+        self.noise = GaussianNoise(0.0)
         self.gru = nn.GRU(features, embedding_size, num_layers,
                           dropout=dropout, bidirectional=bidirectional, batch_first=True)
 
     def forward(self, x):
         batch_size = x.shape[0]
+        x = self.noise(x)
         h_0 = (torch.zeros(self.num_layers * self.h_n_dim, batch_size, self.hidden_size)
                .requires_grad_().to(MODEL_DEFINITION_DEVICE))
         _, hidden = self.gru(x, h_0)
@@ -98,7 +100,7 @@ class GRUEncoder(nn.Module):
 
 
 class GRUDecoder(nn.Module):
-    def __init__(self, features, embedded_size, num_layers=1, bidirectional=False, dropout=0.0):
+    def __init__(self, features, embedded_size, num_layers=1, bidirectional=False, dropout=0.0, noise=0.0):
         super(GRUDecoder, self).__init__()
         self.h_n_dim = 2 if bidirectional else 1
         self.gru = nn.GRU(features, embedded_size, num_layers,
@@ -106,12 +108,14 @@ class GRUDecoder(nn.Module):
         self.flatten = nn.Flatten(1, -1)
         self.dropout = nn.Dropout(dropout)
         self.fc = nn.Linear(embedded_size * num_layers * self.h_n_dim, 1)
+        self.noise = GaussianNoise(noise)
 
     def forward(self, x, h):
         x, hidden = self.gru(x, h)
 
         out = hidden.permute(1, 0, 2)
         out = self.flatten(out)
+        out = self.noise(out)
         out = self.dropout(out)
         out = self.fc(out)
 
@@ -120,16 +124,16 @@ class GRUDecoder(nn.Module):
 
 class Seq2seq(nn.Module):
     def __init__(self, features=11, pred_len=3, embedding_size=64, num_layers=1, bidirectional=False,
-                 dropout=0.2, **kwargs):
+                 dropout=0.2, in_noise=0.0, out_noise=0.0, **kwargs):
         super(Seq2seq, self).__init__()
         self.pred_len = pred_len
         self.features = features
         self.embedding_size = embedding_size
         self.num_layers = num_layers
         self.enc = GRUEncoder(features, embedding_size, num_layers, bidirectional=bidirectional,
-                              dropout=dropout if num_layers > 1 else 0.0)
+                              dropout=dropout if num_layers > 1 else 0.0, noise=in_noise)
         self.dec = GRUDecoder(1, embedding_size, num_layers, bidirectional=bidirectional,
-                              dropout=dropout if num_layers > 1 else 0.0)
+                              dropout=dropout if num_layers > 1 else 0.0, noise=out_noise)
 
     def forward(self, x, y=None, teacher_forcing=0.0):
         batch_size = x.shape[0]
@@ -138,7 +142,7 @@ class Seq2seq(nn.Module):
         output = torch.zeros(batch_size, self.pred_len).to(MODEL_DEFINITION_DEVICE)
 
         for i in range(self.pred_len):
-            out, _, hidden = self.dec(dec_input, hidden)
+            out, _, _ = self.dec(dec_input, hidden)
             output[:, i] = out[:, 0]
             if y is not None and torch.rand(1) < teacher_forcing:
                 dec_input = torch.cat((dec_input, y[:, i].reshape(-1, 1, 1)), dim=1)
