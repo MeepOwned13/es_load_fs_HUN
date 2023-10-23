@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, TensorDataset
 from torch import nn
 from sklearn.model_selection import TimeSeriesSplit
 from math import sqrt as math_sqrt
@@ -24,7 +24,7 @@ def mpe(p, t):
     return np.mean((p - t) / t)
 
 
-def load_country_wide_dataset(file: str):
+def load_country_wide_dataset(file: str, nodrop=False):
     df: pd.DataFrame = pd.read_csv(
         file,
         parse_dates=['Time'],
@@ -45,6 +45,10 @@ def load_country_wide_dataset(file: str):
 
     df['el_load_lag24'] = df['el_load'].shift(24, fill_value=0)
 
+    if nodrop:
+        return df
+
+    # returns features that were selected by the feature selection algorithm using Random Forest
     return df[['el_load', 'prec', 'grad', 'holiday', 'weekend', 'hour',
                'weekday', 'dayofyear', 'month', 'year', 'el_load_lag24']]
 
@@ -53,6 +57,21 @@ class TimeSeriesDataset(Dataset):
     def __init__(self, x, y, seq_len=5, pred_len=1):
         self.X = x
         self.y = y
+        self.seq_len = seq_len
+        self.pred_len = pred_len
+
+    def __len__(self):
+        return len(self.X) - self.seq_len - self.pred_len
+
+    def __getitem__(self, idx):
+        return self.X[idx: idx + self.seq_len], self.y[idx + self.seq_len: idx + self.seq_len + self.pred_len]
+
+
+class TimeSeriesTensorDataset(TensorDataset):
+    def __init__(self, x, y, seq_len=5, pred_len=1):
+        super(TimeSeriesTensorDataset, self).__init__(torch.tensor(x), torch.tensor(y))
+        self.X = self.tensors[0].to(TRAINER_LIB_DEVICE)
+        self.y = self.tensors[1].to(TRAINER_LIB_DEVICE)
         self.seq_len = seq_len
         self.pred_len = pred_len
 
@@ -180,14 +199,80 @@ class TSMWrapper(ABC):
         x = self._std_normalize(x, 'x', store_norm_info)
         y = self._std_normalize(y, 'y', store_norm_info)
 
-        return TimeSeriesDataset(x, y, seq_len=self._seq_len, pred_len=self._pred_len)
+        if TRAINER_LIB_DEVICE == torch.device('cpu'):
+            return TimeSeriesDataset(x, y, seq_len=self._seq_len, pred_len=self._pred_len)
+        else:
+            return TimeSeriesTensorDataset(x, y, seq_len=self._seq_len, pred_len=self._pred_len)
+
+    def _train_epoch(self, model: nn.Module, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
+        optimizer = optimizer or torch.optim.NAdam(model.parameters(), lr=lr)
+
+        model.train()
+        total_loss: float = 0
+
+        for features, labels in data_loader:
+            features = features.to(TRAINER_LIB_DEVICE)
+            labels = labels.to(TRAINER_LIB_DEVICE)
+
+            optimizer.zero_grad()
+            outputs = model(features)
+            loss = loss_fn(outputs, labels)
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+        return total_loss / len(data_loader)
+
+    def _train_model(self, model: nn.Module, train_loader: DataLoader, val_loader: DataLoader,
+                     test_loader: DataLoader | None = None, epochs=100, lr=0.001, optimizer=None,
+                     loss_fn=nn.MSELoss(), es_p=10, es_d=0., verbose=1, cp=False):
+        optimizer: torch.optim.Optimizer = optimizer or torch.optim.NAdam(model.parameters(), lr=lr)
+
+        has_test: bool = test_loader is not None
+
+        train_losses: list = []
+        val_losses: list = []
+        test_losses: list = [] if has_test else None
+
+        early_stopper = EarlyStopper(patience=es_p, min_delta=es_d, model=None if not cp else model)
+        for epoch in range(epochs):
+            train_loss: float = self._train_epoch(model, train_loader, lr=lr, optimizer=optimizer, loss_fn=loss_fn)
+            train_losses.append(train_loss)
+
+            val_loss: float = TSMWrapper.test_model(model, val_loader, loss_fn=loss_fn)
+            val_losses.append(val_loss)
+
+            test_loss: float | None = None if not has_test else TSMWrapper.test_model(model, test_loader,
+                                                                                      loss_fn=loss_fn)
+            if test_loss:
+                test_losses.append(test_loss)
+
+            text_test_loss: str = "" if not has_test else f", test loss: {test_loss:.6f}"  # to make printing easier
+
+            # stop condition
+            if epoch > 10 and early_stopper(val_loss):
+                if verbose > 0:
+                    print("\r" + " " * 75, end="")
+                    print(f"\rEarly stopping... Epoch {epoch+1:03d}: train loss: {train_loss:.6f}, "
+                          f"val loss: {val_loss:.6f}{text_test_loss}", end="")
+                break
+
+            if verbose > 0:
+                print("\r" + " " * 75, end="")
+                print(f"\r\tEpoch {epoch+1:03d}: train loss: {train_loss:.6f}, "
+                      f"val loss: {val_loss:.6f}{text_test_loss}", end="")
+
+        if verbose > 0:
+            print()  # to get newline after the last epoch
+        early_stopper.load_checkpoint()
+        return train_losses, val_losses, test_losses
 
     # endregion
 
     # region public methods
 
     def validate_ts_strategy(self, x: np.ndarray, y: np.ndarray, epochs: int, loss_fn=nn.MSELoss(), val_mod=8,
-                             lr=0.001, batch_size=128, es_p=10, es_d=0., n_splits=5, verbose=2, cp=True, **kwargs):
+                             lr=0.001, batch_size=128, es_p=10, es_d=0., n_splits=6, verbose=2, cp=True, **kwargs):
         ts_cv = TimeSeriesSplit(n_splits=n_splits)
 
         train_losses = []
@@ -264,7 +349,7 @@ class TSMWrapper(ABC):
         with torch.no_grad():
             for features, labels in loader:
                 preds = self._predict_strategy(features)
-                labels = labels.numpy()
+                labels = labels.cpu().numpy()
                 predictions = np.vstack((predictions, preds))
                 true = np.vstack((true, labels))
 
@@ -317,71 +402,6 @@ class TSMWrapper(ABC):
                 m.reset_parameters()
 
         model.apply(fn=weight_reset)
-
-    @staticmethod
-    def train_epoch(model: nn.Module, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
-        optimizer = optimizer or torch.optim.NAdam(model.parameters(), lr=lr)
-
-        model.train()
-        total_loss: float = 0
-
-        for features, labels in data_loader:
-            features = features.to(TRAINER_LIB_DEVICE)
-            labels = labels.to(TRAINER_LIB_DEVICE)
-
-            optimizer.zero_grad()
-            outputs = model(features)
-            loss = loss_fn(outputs, labels)
-            loss.backward()
-            optimizer.step()
-
-            total_loss += loss.item()
-        return total_loss / len(data_loader)
-
-    @staticmethod
-    def train_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader,
-                    test_loader: DataLoader | None = None, epochs=100, lr=0.001, optimizer=None,
-                    loss_fn=nn.MSELoss(), es_p=10, es_d=0., verbose=1, cp=False):
-        optimizer: torch.optim.Optimizer = optimizer or torch.optim.NAdam(model.parameters(), lr=lr)
-
-        has_test: bool = test_loader is not None
-
-        train_losses: list = []
-        val_losses: list = []
-        test_losses: list = [] if has_test else None
-
-        early_stopper = EarlyStopper(patience=es_p, min_delta=es_d, model=None if not cp else model)
-        for epoch in range(epochs):
-            train_loss: float = TSMWrapper.train_epoch(model, train_loader, lr=lr, optimizer=optimizer, loss_fn=loss_fn)
-            train_losses.append(train_loss)
-
-            val_loss: float = TSMWrapper.test_model(model, val_loader, loss_fn=loss_fn)
-            val_losses.append(val_loss)
-
-            test_loss: float | None = None if not has_test else TSMWrapper.test_model(model, test_loader,
-                                                                                      loss_fn=loss_fn)
-            if test_loss:
-                test_losses.append(test_loss)
-
-            text_test_loss: str = "" if not has_test else f", test loss: {test_loss:.6f}"  # to make printing easier
-
-            # stop condition
-            if epoch > 10 and early_stopper(val_loss):
-                if verbose > 0:
-                    print("\r" + " " * 75, end="")
-                    print(f"\rEarly stopping... Epoch {epoch+1:03d}: train loss: {train_loss:.6f}, "
-                          f"val loss: {val_loss:.6f}{text_test_loss}", end="")
-                break
-
-            if verbose > 0:
-                print("\r" + " " * 75, end="")
-                print(f"\r\tEpoch {epoch+1:03d}: train loss: {train_loss:.6f}, "
-                      f"val loss: {val_loss:.6f}{text_test_loss}", end="")
-
-        if verbose > 0:
-            print()  # to get newline after the last epoch
-        early_stopper.load_checkpoint()
-        return train_losses, val_losses, test_losses
 
     @staticmethod
     def test_model(model: nn.Module, data_loader: DataLoader, loss_fn=nn.MSELoss()):
@@ -479,20 +499,20 @@ class MIMOTSWrapper(TSMWrapper):
                        optimizer=None, batch_size=128, loss_fn=nn.MSELoss(), es_p=10, es_d=0.,
                        verbose=1, cp=False, **kwargs):
 
-        train_dataset: TimeSeriesDataset = self._make_ts_dataset(x_train, y_train, store_norm_info=True)
+        train_dataset: Dataset = self._make_ts_dataset(x_train, y_train, store_norm_info=True)
         train_loader: DataLoader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
 
-        val_dataset: TimeSeriesDataset = self._make_ts_dataset(x_val, y_val)
+        val_dataset: Dataset = self._make_ts_dataset(x_val, y_val)
         val_loader: DataLoader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
         test_loader: DataLoader | None = None
         if x_test is not None and y_test is not None:
-            test_dataset: TimeSeriesDataset = self._make_ts_dataset(x_test, y_test)
+            test_dataset: Dataset = self._make_ts_dataset(x_test, y_test)
             test_loader: DataLoader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-        return TSMWrapper.train_model(self._model, train_loader, val_loader, test_loader, epochs=epochs, lr=lr,
-                                      optimizer=optimizer, loss_fn=loss_fn, es_p=es_p, es_d=es_d,
-                                      verbose=verbose, cp=cp)
+        return self._train_model(self._model, train_loader, val_loader, test_loader, epochs=epochs, lr=lr,
+                                 optimizer=optimizer, loss_fn=loss_fn, es_p=es_p, es_d=es_d,
+                                 verbose=verbose, cp=cp)
 
     def _switch_to_eval_mode(self):
         self._model.eval()
@@ -501,5 +521,40 @@ class MIMOTSWrapper(TSMWrapper):
         features = features.to(TRAINER_LIB_DEVICE)
         preds = self._model(features)
         return preds.cpu().numpy()
+
+    # endregion
+
+
+class S2STSWRAPPER(MIMOTSWrapper):
+    def __init__(self, model: nn.Module, seq_len: int, pred_len: int, teacher_forcing_decay=0.01):
+        super(S2STSWRAPPER, self).__init__(model, seq_len, pred_len)
+        self.teacher_forcing_ratio = 0.5
+        self.teacher_forcing_decay = teacher_forcing_decay
+
+    # region override methods
+
+    def init_strategy(self):
+        super().init_strategy()
+        self.teacher_forcing_ratio = 0.5
+
+    def _train_epoch(self, model: nn.Module, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
+        optimizer = optimizer or torch.optim.NAdam(model.parameters(), lr=lr)
+        self.teacher_forcing_ratio = max(0.0, self.teacher_forcing_ratio - self.teacher_forcing_decay)
+
+        model.train()
+        total_loss: float = 0
+
+        for features, labels in data_loader:
+            features = features.to(TRAINER_LIB_DEVICE)
+            labels = labels.to(TRAINER_LIB_DEVICE)
+
+            optimizer.zero_grad()
+            outputs = model(features, labels, self.teacher_forcing_ratio)
+            loss = loss_fn(outputs, labels)
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+        return total_loss / len(data_loader)
 
     # endregion
