@@ -496,6 +496,8 @@ class MIMOTSWrapper(TSMWrapper):
 
     @override
     def _setup_strategy(self, **kwargs):
+        if TRAINER_LIB_DEVICE != torch.device('cpu'):
+            torch.cuda.empty_cache()
         if kwargs.get('model', None) is not None:
             self._model = kwargs['model'](**kwargs).to(TRAINER_LIB_DEVICE)
 
@@ -571,11 +573,11 @@ class S2STSWRAPPER(MIMOTSWrapper):
 
 
 class RECTSWrapper(TSMWrapper):
-    def __init__(self, seq_len: int, pred_len: int, pred_features: tuple, config: dict):
+    def __init__(self, seq_len: int, pred_len: int, pred_features: tuple, config: dict, teacher_forcing_decay=0.02):
         super(RECTSWrapper, self).__init__(seq_len=seq_len, pred_len=pred_len)
         self._idxs_features_to_predict = pred_features  # example: [0, 1, 2]
-        self._teacher_forcing = 1.0
-        self._og_tf = 1.0
+        self._teacher_forcing = self._og_tf = 1.0
+        self._teacher_forcing_decay = teacher_forcing_decay
         # first feature present will be assumed to be the target feature
         self._config = config
         """
@@ -615,9 +617,18 @@ class RECTSWrapper(TSMWrapper):
 
     @override
     def _setup_strategy(self, **kwargs):
+        if TRAINER_LIB_DEVICE != torch.device('cpu'):
+            torch.cuda.empty_cache()
+        self._config = kwargs['config']
+
+        for k in self._idxs_features_to_predict:
+            if k not in self._config:
+                raise ValueError("Key in pred_features must be in config")
+
         for k in self._config:
-            if kwargs.get(f'model_{k}', None) is not None:
-                self._config[k]['model'] = kwargs[f'model_{k}'].to(TRAINER_LIB_DEVICE)
+            if k not in self._idxs_features_to_predict:
+                raise ValueError("Key in config must be in pred_features")
+            self._config[k]['model'] = self._config[k]['model'].to(TRAINER_LIB_DEVICE)
 
     @override
     def train_strategy(self, x_train: np.ndarray, y_train: np.ndarray, x_val: np.ndarray, y_val: np.ndarray,
@@ -642,12 +653,10 @@ class RECTSWrapper(TSMWrapper):
                 test_dataset: TimeSeriesDataset = self._make_ts_dataset(x_test[:, feat], y_test[:, feat])
                 test_loader: DataLoader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
+            print(self._config[k]['model'])
             results[k] = self._train_model(self._config[k]['model'], train_loader, val_loader, test_loader,
                                            epochs=epochs, lr=lr, optimizer=optimizer, loss_fn=loss_fn,
                                            es_p=es_p, es_d=es_d, verbose=verbose, cp=cp)
-
-            self._teacher_forcing = max(0.0, self._teacher_forcing - 0.02)
-
         return results[0]
 
     @override
@@ -656,9 +665,10 @@ class RECTSWrapper(TSMWrapper):
 
         # a crude search, but shouldn't affect performance too much here
         idx, config = self._find_config(model)
-        pred_len = self._pred_len if idx == 0 else self._pred_len - 1
         # other models don't need to predict the last value
+        pred_len = self._pred_len if idx == 0 else self._pred_len - 1
 
+        self._teacher_forcing = max(0.0, self._teacher_forcing - 0.02)
         model.train()
         total_loss: float = 0
 
@@ -669,7 +679,7 @@ class RECTSWrapper(TSMWrapper):
 
                 optimizer.zero_grad()
                 outputs = model(features)
-                if len(config['use_features']) == 1:
+                if idx != 0:
                     loss = loss_fn(outputs, labels[:, i])
                 else:
                     loss = loss_fn(outputs, labels[:, i, idx].unsqueeze(1))
@@ -678,7 +688,7 @@ class RECTSWrapper(TSMWrapper):
 
                 total_loss += loss.item()
 
-                if len(config['use_features']) == 1:
+                if idx != 0:
                     to_concat = outputs.detach().reshape(-1, 1, 1)
                     if torch.rand(1) < self._teacher_forcing:
                         to_concat = labels[:, i].reshape(-1, 1, 1)
@@ -696,6 +706,8 @@ class RECTSWrapper(TSMWrapper):
                     features = torch.cat((features[:, 1:], labels[:, i, :].unsqueeze(1)), dim=1)
                     if torch.rand(1) > self._teacher_forcing:
                         features[:, -1, self._idxs_features_to_predict] = outs.detach()
+
+        self._teacher_forcing = self._og_tf
         return total_loss / len(data_loader)
 
     @override
