@@ -10,6 +10,7 @@ import pandas as pd
 from copy import deepcopy
 from math import sqrt
 from timeit import default_timer as timer
+from overrides import override
 
 TRAINER_LIB_DEVICE = torch.device("cpu")
 if torch.cuda.is_available():
@@ -192,7 +193,12 @@ class TSMWrapper(ABC):
 
             mean, std = self._x_norm_mean, self._x_norm_std
 
-        return arr * std + mean
+        try:
+            res = arr * std + mean
+        except ValueError:
+            res = arr * std[:, 0] + mean[:, 0]
+
+        return res
 
     def _make_ts_dataset(self, x: np.ndarray, y: np.ndarray, store_norm_info: bool = False):
         """Modifies internal mean and std to help denormalization later."""
@@ -239,11 +245,10 @@ class TSMWrapper(ABC):
             train_loss: float = self._train_epoch(model, train_loader, lr=lr, optimizer=optimizer, loss_fn=loss_fn)
             train_losses.append(train_loss)
 
-            val_loss: float = TSMWrapper.test_model(model, val_loader, loss_fn=loss_fn)
+            val_loss: float = self._test_model(model, val_loader, loss_fn=loss_fn)
             val_losses.append(val_loss)
 
-            test_loss: float | None = None if not has_test else TSMWrapper.test_model(model, test_loader,
-                                                                                      loss_fn=loss_fn)
+            test_loss: float | None = None if not has_test else self._test_model(model, test_loader, loss_fn=loss_fn)
             if test_loss:
                 test_losses.append(test_loss)
 
@@ -266,6 +271,20 @@ class TSMWrapper(ABC):
             print()  # to get newline after the last epoch
         early_stopper.load_checkpoint()
         return train_losses, val_losses, test_losses
+
+    def _test_model(self, model: nn.Module, data_loader: DataLoader, loss_fn=nn.MSELoss()):
+        model.eval()
+        total_loss: float = 0
+
+        with torch.no_grad():
+            for features, labels in data_loader:
+                features = features.to(TRAINER_LIB_DEVICE)
+                labels = labels.to(TRAINER_LIB_DEVICE)
+                outputs = model(features)
+
+                loss = loss_fn(outputs, labels)
+                total_loss += loss.item()
+        return total_loss / len(data_loader)
 
     # endregion
 
@@ -348,8 +367,7 @@ class TSMWrapper(ABC):
 
         with torch.no_grad():
             for features, labels in loader:
-                preds = self._predict_strategy(features)
-                labels = labels.cpu().numpy()
+                preds, labels = self._predict_strategy(features, labels)
                 predictions = np.vstack((predictions, preds))
                 true = np.vstack((true, labels))
 
@@ -386,7 +404,7 @@ class TSMWrapper(ABC):
         pass
 
     @abstractmethod
-    def _predict_strategy(self, features) -> np.ndarray:
+    def _predict_strategy(self, features: torch.Tensor, labels: torch.Tensor):
         pass
 
     # endregion
@@ -402,21 +420,6 @@ class TSMWrapper(ABC):
                 m.reset_parameters()
 
         model.apply(fn=weight_reset)
-
-    @staticmethod
-    def test_model(model: nn.Module, data_loader: DataLoader, loss_fn=nn.MSELoss()):
-        model.eval()
-        total_loss: float = 0
-
-        with torch.no_grad():
-            for features, labels in data_loader:
-                features = features.to(TRAINER_LIB_DEVICE)
-                labels = labels.to(TRAINER_LIB_DEVICE)
-                outputs = model(features)
-
-                loss = loss_fn(outputs, labels)
-                total_loss += loss.item()
-        return total_loss / len(data_loader)
 
     @staticmethod
     def print_evaluation_info(preds: np.ndarray, true: np.ndarray, to_graph: int = 1000):
@@ -486,14 +489,17 @@ class MIMOTSWrapper(TSMWrapper):
         self._model = model.to(TRAINER_LIB_DEVICE)
 
     # region override methods
+    @override
     def init_strategy(self):
         self.reset_all_weights(self._model)
         self._model = self._model.to(TRAINER_LIB_DEVICE)
 
+    @override
     def _setup_strategy(self, **kwargs):
         if kwargs.get('model', None) is not None:
             self._model = kwargs['model'](**kwargs).to(TRAINER_LIB_DEVICE)
 
+    @override
     def train_strategy(self, x_train: np.ndarray, y_train: np.ndarray, x_val: np.ndarray, y_val: np.ndarray,
                        x_test: np.ndarray | None = None, y_test: np.ndarray | None = None, epochs=100, lr=0.001,
                        optimizer=None, batch_size=128, loss_fn=nn.MSELoss(), es_p=10, es_d=0.,
@@ -514,13 +520,15 @@ class MIMOTSWrapper(TSMWrapper):
                                  optimizer=optimizer, loss_fn=loss_fn, es_p=es_p, es_d=es_d,
                                  verbose=verbose, cp=cp)
 
+    @override
     def _switch_to_eval_mode(self):
         self._model.eval()
 
-    def _predict_strategy(self, features: torch.Tensor) -> np.ndarray:
+    @override
+    def _predict_strategy(self, features: torch.Tensor, labels: torch.Tensor):
         features = features.to(TRAINER_LIB_DEVICE)
         preds = self._model(features)
-        return preds.cpu().numpy()
+        return preds.cpu().numpy(), labels.cpu().numpy()
 
     # endregion
 
@@ -533,10 +541,12 @@ class S2STSWRAPPER(MIMOTSWrapper):
 
     # region override methods
 
+    @override
     def init_strategy(self):
         super().init_strategy()
         self.teacher_forcing_ratio = 0.5
 
+    @override
     def _train_epoch(self, model: nn.Module, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
         optimizer = optimizer or torch.optim.NAdam(model.parameters(), lr=lr)
         self.teacher_forcing_ratio = max(0.0, self.teacher_forcing_ratio - self.teacher_forcing_decay)
@@ -556,5 +566,215 @@ class S2STSWRAPPER(MIMOTSWrapper):
 
             total_loss += loss.item()
         return total_loss / len(data_loader)
+
+    # endregion
+
+
+class RECTSWrapper(TSMWrapper):
+    def __init__(self, seq_len: int, pred_len: int, pred_features: tuple, config: dict):
+        super(RECTSWrapper, self).__init__(seq_len=seq_len, pred_len=pred_len)
+        self._idxs_features_to_predict = pred_features  # example: [0, 1, 2]
+        self._teacher_forcing = 1.0
+        self._og_tf = 1.0
+        # first feature present will be assumed to be the target feature
+        self._config = config
+        """
+        Example: config:
+        self._config = {
+            0: {
+                'model': 'mod_LSTM',  # class
+                'use_features': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],  # list of indexes
+            },
+            1: {
+                'model': 'mod_CNN',
+                'use_features': [1]
+            },
+            2: {
+                'model': 'mod_CNN',
+                'use_features': [2]
+            }
+        }
+        """
+        for k in pred_features:
+            if k not in self._config:
+                raise ValueError("Key in pred_features must be in config")
+
+        for k in self._config:
+            if k not in pred_features:
+                raise ValueError("Key in config must be in pred_features")
+            self._config[k]['model'] = self._config[k]['model'].to(TRAINER_LIB_DEVICE)
+
+    # region override methods
+
+    @override
+    def init_strategy(self):
+        self._teacher_forcing = self._og_tf
+        for k in self._config:
+            self.reset_all_weights(self._config[k]['model'])
+            self._config[k]['model'] = self._config[k]['model'].to(TRAINER_LIB_DEVICE)
+
+    @override
+    def _setup_strategy(self, **kwargs):
+        for k in self._config:
+            if kwargs.get(f'model_{k}', None) is not None:
+                self._config[k]['model'] = kwargs[f'model_{k}'].to(TRAINER_LIB_DEVICE)
+
+    @override
+    def train_strategy(self, x_train: np.ndarray, y_train: np.ndarray, x_val: np.ndarray, y_val: np.ndarray,
+                       x_test: np.ndarray | None = None, y_test: np.ndarray | None = None, epochs=100, lr=0.001,
+                       optimizer=None, batch_size=128, loss_fn=nn.MSELoss(), es_p=10, es_d=0.,
+                       verbose=1, cp=False, **kwargs):
+        results = {}
+        keys_sorted = list(self._config.keys())
+        keys_sorted.sort(reverse=True)  # I want to go backwards, to train the most important model last
+        # which is the one that predicts the target feature, I want to give it values from the other models too
+        for k in keys_sorted:
+            feat = self._config[k]['use_features']
+            train_dataset: TimeSeriesDataset = self._make_ts_dataset(x_train[:, feat], y_train[:, feat],
+                                                                     store_norm_info=True)
+            train_loader: DataLoader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
+
+            val_dataset: TimeSeriesDataset = self._make_ts_dataset(x_val[:, feat], y_val[:, feat])
+            val_loader: DataLoader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+            test_loader: DataLoader | None = None
+            if x_test is not None and y_test is not None:
+                test_dataset: TimeSeriesDataset = self._make_ts_dataset(x_test[:, feat], y_test[:, feat])
+                test_loader: DataLoader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+            results[k] = self._train_model(self._config[k]['model'], train_loader, val_loader, test_loader,
+                                           epochs=epochs, lr=lr, optimizer=optimizer, loss_fn=loss_fn,
+                                           es_p=es_p, es_d=es_d, verbose=verbose, cp=cp)
+
+            self._teacher_forcing = max(0.0, self._teacher_forcing - 0.02)
+
+        return results[0]
+
+    @override
+    def _train_epoch(self, model: nn.Module, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
+        optimizer = optimizer or torch.optim.NAdam(model.parameters(), lr=lr)
+
+        # a crude search, but shouldn't affect performance too much here
+        idx, config = self._find_config(model)
+        pred_len = self._pred_len if idx == 0 else self._pred_len - 1
+        # other models don't need to predict the last value
+
+        model.train()
+        total_loss: float = 0
+
+        for features, labels in data_loader:
+            for i in range(pred_len):
+                features = features.to(TRAINER_LIB_DEVICE)
+                labels = labels.to(TRAINER_LIB_DEVICE)
+
+                optimizer.zero_grad()
+                outputs = model(features)
+                if len(config['use_features']) == 1:
+                    loss = loss_fn(outputs, labels[:, i])
+                else:
+                    loss = loss_fn(outputs, labels[:, i, idx].unsqueeze(1))
+                loss.backward()
+                optimizer.step()
+
+                total_loss += loss.item()
+
+                if len(config['use_features']) == 1:
+                    to_concat = outputs.detach().reshape(-1, 1, 1)
+                    if torch.rand(1) < self._teacher_forcing:
+                        to_concat = labels[:, i].reshape(-1, 1, 1)
+                    features = torch.cat((features[:, 1:], to_concat), dim=1)
+                else:
+                    outs = torch.zeros((features.shape[0], len(self._idxs_features_to_predict))).to(TRAINER_LIB_DEVICE)
+                    with torch.no_grad():
+                        for k in self._config:
+                            if k == idx:
+                                continue
+                            feat = self._config[k]['use_features']
+                            outs[:, k] = self._config[k]['model'](features[:, :, feat]).reshape(-1)
+                    outs[:, 0] = outputs.reshape(-1)
+
+                    features = torch.cat((features[:, 1:], labels[:, i, :].unsqueeze(1)), dim=1)
+                    if torch.rand(1) > self._teacher_forcing:
+                        features[:, -1, self._idxs_features_to_predict] = outs.detach()
+        return total_loss / len(data_loader)
+
+    @override
+    def _test_model(self, model: nn.Module, data_loader: DataLoader, loss_fn=nn.MSELoss()):
+        # a crude search, but shouldn't affect performance too much here
+        idx, config = self._find_config(model)
+        pred_len = self._pred_len if idx == 0 else self._pred_len - 1
+        # other models don't need to predict the last value
+
+        model.eval()
+        total_loss: float = 0
+
+        with torch.no_grad():
+            for features, labels in data_loader:
+                for i in range(pred_len):
+                    features = features.to(TRAINER_LIB_DEVICE)
+                    labels = labels.to(TRAINER_LIB_DEVICE)
+
+                    outputs = model(features)
+                    if len(config['use_features']) == 1:
+                        loss = loss_fn(outputs, labels[:, i])
+                    else:
+                        loss = loss_fn(outputs, labels[:, i, idx].unsqueeze(1))
+
+                    total_loss += loss.item()
+
+                    if len(config['use_features']) == 1:
+                        to_concat = outputs.detach().reshape(-1, 1, 1)
+                        features = torch.cat((features[:, 1:], to_concat), dim=1)
+                    else:
+                        outs = torch.zeros((features.shape[0], len(self._idxs_features_to_predict))).to(TRAINER_LIB_DEVICE)
+                        for k in self._config:
+                            if k == idx:
+                                continue
+                            feat = self._config[k]['use_features']
+                            outs[:, k] = self._config[k]['model'](features[:, :, feat]).reshape(-1)
+                        outs[:, 0] = outputs.reshape(-1)
+
+                        features = torch.cat((features[:, 1:], labels[:, i, :].unsqueeze(1)), dim=1)
+                        features[:, -1, self._idxs_features_to_predict] = outs.detach()
+        return total_loss / len(data_loader)
+
+    @override
+    def _switch_to_eval_mode(self):
+        for k in self._config:
+            self._config[k]['model'].eval()
+
+    @override
+    def _predict_strategy(self, features: torch.Tensor, labels: torch.Tensor):
+        preds = torch.zeros((features.shape[0], self._pred_len))
+        for i in range(self._pred_len):
+            features = features.to(TRAINER_LIB_DEVICE)
+            labels = labels.to(TRAINER_LIB_DEVICE)
+
+            outputs = torch.zeros((features.shape[0], len(self._idxs_features_to_predict))).to(TRAINER_LIB_DEVICE)
+            for k in self._config:
+                feat = self._config[k]['use_features']
+                outputs[:, k] = self._config[k]['model'](features[:, :, feat]).reshape(-1)
+            preds[:, i] = outputs[:, 0]
+
+            features = torch.cat((features[:, 1:], labels[:, i, :].unsqueeze(1)), dim=1)
+            features[:, -1, self._idxs_features_to_predict] = outputs.detach()
+        return preds.cpu().numpy(), labels[:, :, 0].cpu().numpy()
+
+    # endregion
+
+    # region protected methods
+
+    def _find_config(self, model: nn.Module):
+        idx = None
+        _config = None
+        for k in self._config:
+            if self._config[k]['model'] is model:
+                idx = k
+                _config = self._config[k]
+                break
+        if idx is None or _config is None:
+            raise ValueError("Model not found in config")
+
+        return idx, _config
 
     # endregion
