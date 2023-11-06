@@ -537,6 +537,8 @@ class MIMOTSWrapper(TSMWrapper):
 class S2STSWRAPPER(MIMOTSWrapper):
     def __init__(self, model: nn.Module, seq_len: int, pred_len: int, teacher_forcing_decay=0.01):
         super(S2STSWRAPPER, self).__init__(model, seq_len, pred_len)
+        if pred_len <= 1:
+            raise ValueError("pred_len must be greater than 1")
         self.teacher_forcing_ratio = 0.5
         self.teacher_forcing_decay = teacher_forcing_decay
 
@@ -648,186 +650,59 @@ class RECOneModelTSWrapper(MIMOTSWrapper):
     # endregion
 
 
-class RECMultiModelTSWrapper(TSMWrapper):
-    def __init__(self, seq_len: int, pred_len: int, pred_features: tuple, config: dict, teacher_forcing_decay=0.02):
+class RECMultiModelTSWrapper(MIMOTSWrapper):
+    def __init__(self, model: nn.Module, seq_len: int, pred_len: int, pred_first_n: int, teacher_forcing_decay=0.02):
         """pred_features should contain features in order of training, so that the last feature is the target feature"""
-        super(RECMultiModelTSWrapper, self).__init__(seq_len=seq_len, pred_len=pred_len)
-        self._idxs_features_to_predict = pred_features  # example: [0, 1, 2]
+        super(RECMultiModelTSWrapper, self).__init__(model=model, seq_len=seq_len, pred_len=pred_len)
+        if pred_len <= 1:
+            raise ValueError("pred_len must be greater than 1")
+        self._pred_first_n = pred_first_n
         self._teacher_forcing = self._og_tf = 1.0
         self._teacher_forcing_decay = teacher_forcing_decay
-        # first feature present will be assumed to be the target feature
-        self._config = config
-        """
-        Example: config:
-        self._config = {
-            0: {
-                'model': 'mod_LSTM',  # class
-                'use_features': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],  # list of indexes
-            },
-            1: {
-                'model': 'mod_CNN',
-                'use_features': [1]
-            },
-            2: {
-                'model': 'mod_CNN',
-                'use_features': [2]
-            }
-        }
-        """
-        for k in pred_features:
-            if k not in self._config:
-                raise ValueError("Key in pred_features must be in config")
-
-        for k in self._config:
-            if k not in pred_features:
-                raise ValueError("Key in config must be in pred_features")
-            self._config[k]['model'] = self._config[k]['model'].to(TRAINER_LIB_DEVICE)
 
     # region override methods
 
     @override
     def init_strategy(self):
+        super().init_strategy()
         self._teacher_forcing = self._og_tf
-        for k in self._config:
-            self.reset_all_weights(self._config[k]['model'])
-            self._config[k]['model'] = self._config[k]['model'].to(TRAINER_LIB_DEVICE)
-
-    @override
-    def _setup_strategy(self, **kwargs):
-        if TRAINER_LIB_DEVICE != torch.device('cpu'):
-            torch.cuda.empty_cache()
-        self._config = kwargs['config']
-
-        for k in self._idxs_features_to_predict:
-            if k not in self._config:
-                raise ValueError("Key in pred_features must be in config")
-
-        for k in self._config:
-            if k not in self._idxs_features_to_predict:
-                raise ValueError("Key in config must be in pred_features")
-            self._config[k]['model'] = self._config[k]['model'].to(TRAINER_LIB_DEVICE)
-
-    @override
-    def train_strategy(self, x_train: np.ndarray, y_train: np.ndarray, x_val: np.ndarray, y_val: np.ndarray,
-                       x_test: np.ndarray | None = None, y_test: np.ndarray | None = None, epochs=100, lr=0.001,
-                       optimizer=None, batch_size=128, loss_fn=nn.MSELoss(), es_p=10, es_d=0.,
-                       verbose=1, cp=False, **kwargs):
-        results = {}
-        # which is the one that predicts the target feature, I want to give it values from the other models too
-        for k in self._idxs_features_to_predict:
-            feat = self._config[k]['use_features']
-            train_dataset: TimeSeriesDataset = self._make_ts_dataset(x_train[:, feat], y_train[:, feat],
-                                                                     store_norm_info=True)
-            train_loader: DataLoader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
-
-            val_dataset: TimeSeriesDataset = self._make_ts_dataset(x_val[:, feat], y_val[:, feat])
-            val_loader: DataLoader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-
-            test_loader: DataLoader | None = None
-            if x_test is not None and y_test is not None:
-                test_dataset: TimeSeriesDataset = self._make_ts_dataset(x_test[:, feat], y_test[:, feat])
-                test_loader: DataLoader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-
-            results[k] = self._train_model(self._config[k]['model'], train_loader, val_loader, test_loader,
-                                           epochs=epochs, lr=lr, optimizer=optimizer, loss_fn=loss_fn,
-                                           es_p=es_p, es_d=es_d, verbose=verbose, cp=cp)
-            self._teacher_forcing = self._og_tf
-
-        return results[0]
 
     @override
     def _train_epoch(self, model: nn.Module, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
         optimizer = optimizer or torch.optim.NAdam(model.parameters(), lr=lr)
-
-        # a crude search, but shouldn't affect performance too much here
-        idx, config = self._find_config(model)
-        # other models don't need to predict the last value
-        pred_len = self._pred_len if idx == 0 else self._pred_len - 1
 
         self._teacher_forcing = max(0.0, self._teacher_forcing - self._teacher_forcing_decay)
         model.train()
         total_loss: float = 0
 
         for features, labels in data_loader:
-            for i in range(pred_len):
-                features = features.to(TRAINER_LIB_DEVICE)
-                labels = labels.to(TRAINER_LIB_DEVICE)
+            features = features.to(TRAINER_LIB_DEVICE)
+            labels = labels.to(TRAINER_LIB_DEVICE)
 
-                optimizer.zero_grad()
-                outputs = model(features)
-                if len(config['use_features']) == 1:
-                    loss = loss_fn(outputs, labels[:, i])
-                else:
-                    loss = loss_fn(outputs, labels[:, i, idx].unsqueeze(1))
-                loss.backward()
-                optimizer.step()
+            optimizer.zero_grad()
+            outputs = model(features, labels, self._teacher_forcing)
+            loss = loss_fn(outputs, labels[:, :, 0])
+            loss.backward()
+            optimizer.step()
 
-                total_loss += loss.item()
-
-                if len(config['use_features']) == 1:
-                    to_concat = outputs.detach().reshape(-1, 1, 1)
-                    if torch.rand(1) < self._teacher_forcing:
-                        to_concat = labels[:, i].reshape(-1, 1, 1)
-                    features = torch.cat((features[:, 1:], to_concat), dim=1)
-                else:
-                    outs = torch.zeros((features.shape[0], len(self._idxs_features_to_predict))).to(TRAINER_LIB_DEVICE)
-                    with torch.no_grad():
-                        for k in self._config:
-                            if k == idx:
-                                continue
-                            feat = self._config[k]['use_features']
-                            outs[:, k] = self._config[k]['model'](features[:, :, feat]).reshape(-1)
-                    outs[:, 0] = outputs.reshape(-1)
-
-                    features = torch.cat((features[:, 1:], labels[:, i, :].unsqueeze(1)), dim=1)
-                    if torch.rand(1) > self._teacher_forcing:
-                        features[:, -1, self._idxs_features_to_predict] = outs.detach()
+            total_loss += loss.item()
         return total_loss / len(data_loader)
 
     @override
     def _test_model(self, model: nn.Module, data_loader: DataLoader, loss_fn=nn.MSELoss()):
-        # a crude search, but shouldn't affect performance too much here
-        idx, config = self._find_config(model)
-        pred_len = self._pred_len if idx == 0 else self._pred_len - 1
-        # other models don't need to predict the last value
-
         model.eval()
         total_loss: float = 0
 
         with torch.no_grad():
             for features, labels in data_loader:
-                for i in range(pred_len):
-                    features = features.to(TRAINER_LIB_DEVICE)
-                    labels = labels.to(TRAINER_LIB_DEVICE)
+                features = features.to(TRAINER_LIB_DEVICE)
+                labels = labels.to(TRAINER_LIB_DEVICE)
 
-                    outputs = model(features)
-                    if len(config['use_features']) == 1:
-                        loss = loss_fn(outputs, labels[:, i])
-                    else:
-                        loss = loss_fn(outputs, labels[:, i, idx].unsqueeze(1))
+                outputs = model(features, labels[:, :, self._pred_first_n:])
+                loss = loss_fn(outputs, labels[:, :, 0])
 
-                    total_loss += loss.item()
-
-                    if len(config['use_features']) == 1:
-                        to_concat = outputs.detach().reshape(-1, 1, 1)
-                        features = torch.cat((features[:, 1:], to_concat), dim=1)
-                    else:
-                        outs = torch.zeros((features.shape[0], len(self._idxs_features_to_predict))).to(TRAINER_LIB_DEVICE)
-                        for k in self._config:
-                            if k == idx:
-                                continue
-                            feat = self._config[k]['use_features']
-                            outs[:, k] = self._config[k]['model'](features[:, :, feat]).reshape(-1)
-                        outs[:, 0] = outputs.reshape(-1)
-
-                        features = torch.cat((features[:, 1:], labels[:, i, :].unsqueeze(1)), dim=1)
-                        features[:, -1, self._idxs_features_to_predict] = outs.detach()
+                total_loss += loss.item()
         return total_loss / len(data_loader)
-
-    @override
-    def _switch_to_eval_mode(self):
-        for k in self._config:
-            self._config[k]['model'].eval()
 
     @override
     def _predict_strategy(self, features: torch.Tensor, labels: torch.Tensor):
@@ -836,31 +711,7 @@ class RECMultiModelTSWrapper(TSMWrapper):
             features = features.to(TRAINER_LIB_DEVICE)
             labels = labels.to(TRAINER_LIB_DEVICE)
 
-            outputs = torch.zeros((features.shape[0], len(self._idxs_features_to_predict))).to(TRAINER_LIB_DEVICE)
-            for k in self._config:
-                feat = self._config[k]['use_features']
-                outputs[:, k] = self._config[k]['model'](features[:, :, feat]).reshape(-1)
-            preds[:, i] = outputs[:, 0]
-
-            features = torch.cat((features[:, 1:], labels[:, i, :].unsqueeze(1)), dim=1)
-            features[:, -1, self._idxs_features_to_predict] = outputs.detach()
+            preds = self._model(features, labels[:, :, self._pred_first_n:])
         return preds.cpu().numpy(), labels[:, :, 0].cpu().numpy()
-
-    # endregion
-
-    # region protected methods
-
-    def _find_config(self, model: nn.Module):
-        idx = None
-        _config = None
-        for k in self._config:
-            if self._config[k]['model'] is model:
-                idx = k
-                _config = self._config[k]
-                break
-        if idx is None or _config is None:
-            raise ValueError("Model not found in config")
-
-        return idx, _config
 
     # endregion
