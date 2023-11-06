@@ -8,7 +8,6 @@ from math import sqrt as math_sqrt
 import matplotlib.pyplot as plt
 import pandas as pd
 from copy import deepcopy
-from math import sqrt
 from timeit import default_timer as timer
 from overrides import override
 
@@ -319,7 +318,7 @@ class TSMWrapper(ABC):
                                                                   verbose=verbose-1, cp=cp)
 
             pred, true = self.predict(x_test, y_test)
-            metric_loss = sqrt(nn.MSELoss()(torch.tensor(pred), torch.tensor(true)).item())
+            metric_loss = math_sqrt(nn.MSELoss()(torch.tensor(pred), torch.tensor(true)).item())
 
             train_losses.append(train_loss)
             val_losses.append(val_loss)
@@ -651,6 +650,7 @@ class RECOneModelTSWrapper(MIMOTSWrapper):
 
 class RECMultiModelTSWrapper(TSMWrapper):
     def __init__(self, seq_len: int, pred_len: int, pred_features: tuple, config: dict, teacher_forcing_decay=0.02):
+        """pred_features should contain features in order of training, so that the last feature is the target feature"""
         super(RECMultiModelTSWrapper, self).__init__(seq_len=seq_len, pred_len=pred_len)
         self._idxs_features_to_predict = pred_features  # example: [0, 1, 2]
         self._teacher_forcing = self._og_tf = 1.0
@@ -713,10 +713,8 @@ class RECMultiModelTSWrapper(TSMWrapper):
                        optimizer=None, batch_size=128, loss_fn=nn.MSELoss(), es_p=10, es_d=0.,
                        verbose=1, cp=False, **kwargs):
         results = {}
-        keys_sorted = list(self._config.keys())
-        keys_sorted.sort(reverse=True)  # I want to go backwards, to train the most important model last
         # which is the one that predicts the target feature, I want to give it values from the other models too
-        for k in keys_sorted:
+        for k in self._idxs_features_to_predict:
             feat = self._config[k]['use_features']
             train_dataset: TimeSeriesDataset = self._make_ts_dataset(x_train[:, feat], y_train[:, feat],
                                                                      store_norm_info=True)
@@ -746,7 +744,7 @@ class RECMultiModelTSWrapper(TSMWrapper):
         # other models don't need to predict the last value
         pred_len = self._pred_len if idx == 0 else self._pred_len - 1
 
-        self._teacher_forcing = max(0.0, self._teacher_forcing - 0.02)
+        self._teacher_forcing = max(0.0, self._teacher_forcing - self._teacher_forcing_decay)
         model.train()
         total_loss: float = 0
 
@@ -757,7 +755,7 @@ class RECMultiModelTSWrapper(TSMWrapper):
 
                 optimizer.zero_grad()
                 outputs = model(features)
-                if idx != 0:
+                if len(config['use_features']) == 1:
                     loss = loss_fn(outputs, labels[:, i])
                 else:
                     loss = loss_fn(outputs, labels[:, i, idx].unsqueeze(1))
@@ -766,7 +764,7 @@ class RECMultiModelTSWrapper(TSMWrapper):
 
                 total_loss += loss.item()
 
-                if idx != 0:
+                if len(config['use_features']) == 1:
                     to_concat = outputs.detach().reshape(-1, 1, 1)
                     if torch.rand(1) < self._teacher_forcing:
                         to_concat = labels[:, i].reshape(-1, 1, 1)
