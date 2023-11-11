@@ -135,7 +135,7 @@ class Grid:
 
 
 class TSMWrapper(ABC):
-    def __init__(self, seq_len: int, pred_len: int):
+    def __init__(self, model: nn.Module, seq_len: int, pred_len: int):
         self._seq_len: int = seq_len
         self._pred_len: int = pred_len
 
@@ -143,6 +143,18 @@ class TSMWrapper(ABC):
         self._x_norm_std: np.ndarray | None = None
         self._y_norm_mean: np.ndarray | None = None
         self._y_norm_std: np.ndarray | None = None
+
+        self._model = model
+
+    # region magic methods
+
+    def __del__(self):
+        """WARNING: deletion of the object will delete the model as well!"""
+        del self._model
+        if TRAINER_LIB_DEVICE != torch.device('cpu'):
+            torch.cuda.empty_cache()
+
+    # endregion
 
     # region protected methods
 
@@ -209,10 +221,10 @@ class TSMWrapper(ABC):
         else:
             return TimeSeriesTensorDataset(x, y, seq_len=self._seq_len, pred_len=self._pred_len)
 
-    def _train_epoch(self, model: nn.Module, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
-        optimizer = optimizer or torch.optim.NAdam(model.parameters(), lr=lr)
+    def _train_epoch(self, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
+        optimizer = optimizer or torch.optim.NAdam(self._model.parameters(), lr=lr)
 
-        model.train()
+        self._model.train()
         total_loss: float = 0
 
         for features, labels in data_loader:
@@ -220,7 +232,7 @@ class TSMWrapper(ABC):
             labels = labels.to(TRAINER_LIB_DEVICE)
 
             optimizer.zero_grad()
-            outputs = model(features)
+            outputs = self._model(features)
             loss = loss_fn(outputs, labels)
             loss.backward()
             optimizer.step()
@@ -228,10 +240,10 @@ class TSMWrapper(ABC):
             total_loss += loss.item()
         return total_loss / len(data_loader)
 
-    def _train_model(self, model: nn.Module, train_loader: DataLoader, val_loader: DataLoader,
+    def _train_model(self, train_loader: DataLoader, val_loader: DataLoader,
                      test_loader: DataLoader | None = None, epochs=100, lr=0.001, optimizer=None,
                      loss_fn=nn.MSELoss(), es_p=10, es_d=0., verbose=1, cp=False):
-        optimizer: torch.optim.Optimizer = optimizer or torch.optim.NAdam(model.parameters(), lr=lr)
+        optimizer: torch.optim.Optimizer = optimizer or torch.optim.NAdam(self._model.parameters(), lr=lr)
 
         has_test: bool = test_loader is not None
 
@@ -239,15 +251,15 @@ class TSMWrapper(ABC):
         val_losses: list = []
         test_losses: list = [] if has_test else None
 
-        early_stopper = EarlyStopper(patience=es_p, min_delta=es_d, model=None if not cp else model)
+        early_stopper = EarlyStopper(patience=es_p, min_delta=es_d, model=None if not cp else self._model)
         for epoch in range(epochs):
-            train_loss: float = self._train_epoch(model, train_loader, lr=lr, optimizer=optimizer, loss_fn=loss_fn)
+            train_loss: float = self._train_epoch(train_loader, lr=lr, optimizer=optimizer, loss_fn=loss_fn)
             train_losses.append(train_loss)
 
-            val_loss: float = self._test_model(model, val_loader, loss_fn=loss_fn)
+            val_loss: float = self._test_model(val_loader, loss_fn=loss_fn)
             val_losses.append(val_loss)
 
-            test_loss: float | None = None if not has_test else self._test_model(model, test_loader, loss_fn=loss_fn)
+            test_loss: float | None = None if not has_test else self._test_model(test_loader, loss_fn=loss_fn)
             if test_loss:
                 test_losses.append(test_loss)
 
@@ -271,19 +283,28 @@ class TSMWrapper(ABC):
         early_stopper.load_checkpoint()
         return train_losses, val_losses, test_losses
 
-    def _test_model(self, model: nn.Module, data_loader: DataLoader, loss_fn=nn.MSELoss()):
-        model.eval()
+    def _test_model(self, data_loader: DataLoader, loss_fn=nn.MSELoss()):
+        self._model.eval()
         total_loss: float = 0
 
         with torch.no_grad():
             for features, labels in data_loader:
                 features = features.to(TRAINER_LIB_DEVICE)
                 labels = labels.to(TRAINER_LIB_DEVICE)
-                outputs = model(features)
+                outputs = self._model(features)
 
                 loss = loss_fn(outputs, labels)
                 total_loss += loss.item()
         return total_loss / len(data_loader)
+
+    def _reset_all_weights(self) -> None:
+        @torch.no_grad()
+        def weight_reset(m: nn.Module):
+            reset_parameters = getattr(m, "reset_parameters", None)
+            if callable(reset_parameters):
+                m.reset_parameters()
+
+        self._model.apply(fn=weight_reset)
 
     # endregion
 
@@ -357,7 +378,7 @@ class TSMWrapper(ABC):
         return best_params, best_score
 
     def predict(self, x: np.ndarray, y: np.ndarray):
-        self._switch_to_eval_mode()
+        self._model.eval()
         dataset: TimeSeriesDataset = self._make_ts_dataset(x, y)
         loader: DataLoader = DataLoader(dataset, batch_size=64, shuffle=False)
 
@@ -371,6 +392,32 @@ class TSMWrapper(ABC):
                 true = np.vstack((true, labels))
 
         return self._std_denormalize(predictions, 'y'), self._std_denormalize(true, 'y')
+
+    def save_state(self, path):
+        state = {
+            'state_dict': self._model.state_dict(),
+            'seq_len': self._seq_len,
+            'pred_len': self._pred_len,
+            'x_norm_mean': self._x_norm_mean,
+            'x_norm_std': self._x_norm_std,
+            'y_norm_mean': self._y_norm_mean,
+            'y_norm_std': self._y_norm_std,
+        }
+        torch.save(state, path)
+
+    def load_state(self, path):
+        state = torch.load(path, map_location=TRAINER_LIB_DEVICE)
+
+        self._seq_len = state['seq_len']
+        self._pred_len = state['pred_len']
+        self._x_norm_mean = state['x_norm_mean']
+        self._x_norm_std = state['x_norm_std']
+        self._y_norm_mean = state['y_norm_mean']
+        self._y_norm_std = state['y_norm_std']
+
+        self._model.load_state_dict(state['state_dict'])
+        self._model.to(TRAINER_LIB_DEVICE)
+        self._model.eval()
 
     # endregion
 
@@ -399,26 +446,12 @@ class TSMWrapper(ABC):
         pass
 
     @abstractmethod
-    def _switch_to_eval_mode(self):
-        pass
-
-    @abstractmethod
     def _predict_strategy(self, features: torch.Tensor, labels: torch.Tensor):
         pass
 
     # endregion
 
     # region static methods
-
-    @staticmethod
-    def reset_all_weights(model: nn.Module) -> None:
-        @torch.no_grad()
-        def weight_reset(m: nn.Module):
-            reset_parameters = getattr(m, "reset_parameters", None)
-            if callable(reset_parameters):
-                m.reset_parameters()
-
-        model.apply(fn=weight_reset)
 
     @staticmethod
     def print_evaluation_info(preds: np.ndarray, true: np.ndarray, to_graph: int = 1000):
@@ -456,16 +489,23 @@ class TSMWrapper(ABC):
 
             mae = np.abs(pred - true)
 
-            axs[i].set_title(f"Predicting ahead by {i+1} hour")
-            axs[i].plot(true, label="true", color="green")
-            axs[i].plot(pred, label="pred", color="red")
+            fontsize = 22
+            ax = axs[i]
+            ax.set_title(f"Predicting ahead by {i+1} hour")
+            ax.plot(true, label="true", color="green")
+            ax.plot(pred, label="pred", color="red")
 
-            ax2 = axs[i].twinx()
+            ax2 = ax.twinx()
             ax2.set_ylim(0, np.max(mae) * 5)
             ax2.bar(np.arange(mae.shape[0]), mae, label="mae", color="purple")
 
-            axs[i].legend(loc="upper right")
-            ax2.legend(loc="lower right")
+            ax.legend(loc="upper right", fontsize=fontsize)
+            ax2.legend(loc="lower right", fontsize=fontsize)
+
+            # set font size of everything to 18 in the plot and twinplot
+            for item in ([ax.title, ax.xaxis.label, ax.yaxis.label, ax2.yaxis.label] +
+                         ax.get_xticklabels() + ax.get_yticklabels() + ax2.get_xticklabels() + ax2.get_yticklabels()):
+                item.set_fontsize(fontsize)
         plt.show()
 
     @staticmethod
@@ -484,13 +524,12 @@ class TSMWrapper(ABC):
 
 class MIMOTSWrapper(TSMWrapper):
     def __init__(self, model: nn.Module, seq_len: int, pred_len: int):
-        super(MIMOTSWrapper, self).__init__(seq_len=seq_len, pred_len=pred_len)
-        self._model = model.to(TRAINER_LIB_DEVICE)
+        super(MIMOTSWrapper, self).__init__(model=model, seq_len=seq_len, pred_len=pred_len)
 
     # region override methods
     @override
     def init_strategy(self):
-        self.reset_all_weights(self._model)
+        self._reset_all_weights()
         self._model = self._model.to(TRAINER_LIB_DEVICE)
 
     @override
@@ -517,13 +556,9 @@ class MIMOTSWrapper(TSMWrapper):
             test_dataset: Dataset = self._make_ts_dataset(x_test, y_test)
             test_loader: DataLoader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-        return self._train_model(self._model, train_loader, val_loader, test_loader, epochs=epochs, lr=lr,
+        return self._train_model(train_loader, val_loader, test_loader, epochs=epochs, lr=lr,
                                  optimizer=optimizer, loss_fn=loss_fn, es_p=es_p, es_d=es_d,
                                  verbose=verbose, cp=cp)
-
-    @override
-    def _switch_to_eval_mode(self):
-        self._model.eval()
 
     @override
     def _predict_strategy(self, features: torch.Tensor, labels: torch.Tensor):
@@ -550,11 +585,11 @@ class S2STSWRAPPER(MIMOTSWrapper):
         self.teacher_forcing_ratio = 0.5
 
     @override
-    def _train_epoch(self, model: nn.Module, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
-        optimizer = optimizer or torch.optim.NAdam(model.parameters(), lr=lr)
+    def _train_epoch(self, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
+        optimizer = optimizer or torch.optim.NAdam(self._model.parameters(), lr=lr)
         self.teacher_forcing_ratio = max(0.0, self.teacher_forcing_ratio - self.teacher_forcing_decay)
 
-        model.train()
+        self._model.train()
         total_loss: float = 0
 
         for features, labels in data_loader:
@@ -562,7 +597,7 @@ class S2STSWRAPPER(MIMOTSWrapper):
             labels = labels.to(TRAINER_LIB_DEVICE)
 
             optimizer.zero_grad()
-            outputs = model(features, labels, self.teacher_forcing_ratio)
+            outputs = self._model(features, labels, self.teacher_forcing_ratio)
             loss = loss_fn(outputs, labels)
             loss.backward()
             optimizer.step()
@@ -589,11 +624,11 @@ class RECOneModelTSWrapper(MIMOTSWrapper):
         self._teacher_forcing = self._og_tf
 
     @override
-    def _train_epoch(self, model: nn.Module, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
-        optimizer = optimizer or torch.optim.NAdam(model.parameters(), lr=lr)
+    def _train_epoch(self, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
+        optimizer = optimizer or torch.optim.NAdam(self._model.parameters(), lr=lr)
 
         self._teacher_forcing = max(0.0, self._teacher_forcing - 0.02)
-        model.train()
+        self._model.train()
         total_loss: float = 0
 
         for features, labels in data_loader:
@@ -602,7 +637,7 @@ class RECOneModelTSWrapper(MIMOTSWrapper):
                 labels = labels.to(TRAINER_LIB_DEVICE)
 
                 optimizer.zero_grad()
-                outputs = model(features)
+                outputs = self._model(features)
                 loss = loss_fn(outputs, labels[:, i])
                 loss.backward()
                 optimizer.step()
@@ -616,8 +651,8 @@ class RECOneModelTSWrapper(MIMOTSWrapper):
         return total_loss / len(data_loader)
 
     @override
-    def _test_model(self, model: nn.Module, data_loader: DataLoader, loss_fn=nn.MSELoss()):
-        model.eval()
+    def _test_model(self, data_loader: DataLoader, loss_fn=nn.MSELoss()):
+        self._model.eval()
         total_loss: float = 0
 
         with torch.no_grad():
@@ -626,7 +661,7 @@ class RECOneModelTSWrapper(MIMOTSWrapper):
                     features = features.to(TRAINER_LIB_DEVICE)
                     labels = labels.to(TRAINER_LIB_DEVICE)
 
-                    outputs = model(features)
+                    outputs = self._model(features)
                     loss = loss_fn(outputs, labels[:, i])
 
                     total_loss += loss.item()
@@ -668,11 +703,11 @@ class RECMultiModelTSWrapper(MIMOTSWrapper):
         self._teacher_forcing = self._og_tf
 
     @override
-    def _train_epoch(self, model: nn.Module, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
-        optimizer = optimizer or torch.optim.NAdam(model.parameters(), lr=lr)
+    def _train_epoch(self, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
+        optimizer = optimizer or torch.optim.NAdam(self._model.parameters(), lr=lr)
 
         self._teacher_forcing = max(0.0, self._teacher_forcing - self._teacher_forcing_decay)
-        model.train()
+        self._model.train()
         total_loss: float = 0
 
         for features, labels in data_loader:
@@ -680,7 +715,7 @@ class RECMultiModelTSWrapper(MIMOTSWrapper):
             labels = labels.to(TRAINER_LIB_DEVICE)
 
             optimizer.zero_grad()
-            outputs = model(features, labels, self._teacher_forcing)
+            outputs = self._model(features, labels, self._teacher_forcing)
             loss = loss_fn(outputs, labels[:, :, 0])
             loss.backward()
             optimizer.step()
@@ -689,8 +724,8 @@ class RECMultiModelTSWrapper(MIMOTSWrapper):
         return total_loss / len(data_loader)
 
     @override
-    def _test_model(self, model: nn.Module, data_loader: DataLoader, loss_fn=nn.MSELoss()):
-        model.eval()
+    def _test_model(self, data_loader: DataLoader, loss_fn=nn.MSELoss()):
+        self._model.eval()
         total_loss: float = 0
 
         with torch.no_grad():
@@ -698,7 +733,7 @@ class RECMultiModelTSWrapper(MIMOTSWrapper):
                 features = features.to(TRAINER_LIB_DEVICE)
                 labels = labels.to(TRAINER_LIB_DEVICE)
 
-                outputs = model(features, labels[:, :, self._pred_first_n:])
+                outputs = self._model(features, labels[:, :, self._pred_first_n:])
                 loss = loss_fn(outputs, labels[:, :, 0])
 
                 total_loss += loss.item()
