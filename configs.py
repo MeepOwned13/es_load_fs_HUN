@@ -97,7 +97,7 @@ class GRU(nn.Module):
             nn.Flatten(),
             tmd.GaussianNoise(noise),
             nn.Dropout(dropout),
-            nn.Linear(self.hidden_size * self.h_n_dim * self.num_layers, features)
+            nn.Linear(self.hidden_size * self.h_n_dim * self.num_layers, pred_len)
         )
 
     def forward(self, x):

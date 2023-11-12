@@ -1,0 +1,118 @@
+{
+    "mimo_cnn": {},
+    "mimo_tcn": {
+        "fold_1": {
+            "RMSE": 78.5371,
+            "model": "final_eval_results/mimo_tcn/fold_1.pt"
+        },
+        "fold_2": {
+            "RMSE": 71.9153,
+            "model": "final_eval_results/mimo_tcn/fold_2.pt"
+        },
+        "fold_3": {
+            "RMSE": 70.1356,
+            "model": "final_eval_results/mimo_tcn/fold_3.pt"
+        },
+        "fold_4": {
+            "RMSE": 73.9926,
+            "model": "final_eval_results/mimo_tcn/fold_4.pt"
+        },
+        "fold_5": {
+            "RMSE": 87.7542,
+            "model": "final_eval_results/mimo_tcn/fold_5.pt"
+        },
+        "fold_6": {
+            "RMSE": 92.2294,
+            "model": "final_eval_results/mimo_tcn/fold_6.pt"
+        },
+        "fold_7": {
+            "RMSE": 97.4596,
+            "model": "final_eval_results/mimo_tcn/fold_7.pt"
+        },
+        "fold_8": {
+            "RMSE": 110.755,
+            "model": "final_eval_results/mimo_tcn/fold_8.pt"
+        },
+        "fold_9": {
+            "RMSE": 111.9573,
+            "model": "final_eval_results/mimo_tcn/fold_9.pt"
+        }
+    },
+    "mimo_lstm": {
+        "fold_1": {
+            "RMSE": 166.317,
+            "model": "final_eval_results/mimo_lstm/fold_1.pt"
+        },
+        "fold_2": {
+            "RMSE": 92.1488,
+            "model": "final_eval_results/mimo_lstm/fold_2.pt"
+        },
+        "fold_3": {
+            "RMSE": 68.7685,
+            "model": "final_eval_results/mimo_lstm/fold_3.pt"
+        },
+        "fold_4": {
+            "RMSE": 76.7725,
+            "model": "final_eval_results/mimo_lstm/fold_4.pt"
+        },
+        "fold_5": {
+            "RMSE": 85.3773,
+            "model": "final_eval_results/mimo_lstm/fold_5.pt"
+        },
+        "fold_6": {
+            "RMSE": 84.8079,
+            "model": "final_eval_results/mimo_lstm/fold_6.pt"
+        },
+        "fold_7": {
+            "RMSE": 81.5652,
+            "model": "final_eval_results/mimo_lstm/fold_7.pt"
+        },
+        "fold_8": {
+            "RMSE": 97.2255,
+            "model": "final_eval_results/mimo_lstm/fold_8.pt"
+        },
+        "fold_9": {
+            "RMSE": 96.3208,
+            "model": "final_eval_results/mimo_lstm/fold_9.pt"
+        }
+    },
+    "seq2seq": {
+        "fold_1": {
+            "RMSE": 151.6809,
+            "model": "final_eval_results/seq2seq/fold_1.pt"
+        },
+        "fold_2": {
+            "RMSE": 70.9692,
+            "model": "final_eval_results/seq2seq/fold_2.pt"
+        },
+        "fold_3": {
+            "RMSE": 65.8278,
+            "model": "final_eval_results/seq2seq/fold_3.pt"
+        },
+        "fold_4": {
+            "RMSE": 72.0728,
+            "model": "final_eval_results/seq2seq/fold_4.pt"
+        },
+        "fold_5": {
+            "RMSE": 82.4505,
+            "model": "final_eval_results/seq2seq/fold_5.pt"
+        },
+        "fold_6": {
+            "RMSE": 79.5135,
+            "model": "final_eval_results/seq2seq/fold_6.pt"
+        },
+        "fold_7": {
+            "RMSE": 76.7087,
+            "model": "final_eval_results/seq2seq/fold_7.pt"
+        },
+        "fold_8": {
+            "RMSE": 92.3285,
+            "model": "final_eval_results/seq2seq/fold_8.pt"
+        },
+        "fold_9": {
+            "RMSE": 95.5576,
+            "model": "final_eval_results/seq2seq/fold_9.pt"
+        }
+    },
+    "rec_om": {}
+}
