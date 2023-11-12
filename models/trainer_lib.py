@@ -472,12 +472,14 @@ class TSMWrapper(ABC):
                   f"MAPE: {mape(preds[:, i], true[:, i]) * 100:6.3f}%, "
                   f"MPE: {mpe(preds[:, i], true[:, i]) * 100:6.3f}%")
 
-        TSMWrapper.plot_predictions(preds[-to_graph:], true[-to_graph:])
+        TSMWrapper.plot_predictions_per_hour(preds[-to_graph:], true[-to_graph:])
 
     @staticmethod
-    def plot_predictions(y_pred: np.ndarray, y_true: np.ndarray):
+    def plot_predictions_per_hour(y_pred: np.ndarray, y_true: np.ndarray):
         if y_true.shape != y_pred.shape:
             raise ValueError("Shapes of y_true and y_pred must be equal")
+        if y_true.ndim != 2:
+            raise ValueError("y_true and y_pred must be 2 dimensional")
 
         n_of_plots = y_true.shape[1]
         fig, axs = plt.subplots(nrows=n_of_plots, ncols=1, figsize=(50, 12*n_of_plots))
@@ -489,7 +491,6 @@ class TSMWrapper(ABC):
 
             mae = np.abs(pred - true)
 
-            fontsize = 22
             ax = axs[i]
             ax.set_title(f"Predicting ahead by {i+1} hour")
             ax.plot(true, label="true", color="green")
@@ -499,12 +500,36 @@ class TSMWrapper(ABC):
             ax2.set_ylim(0, np.max(mae) * 5)
             ax2.bar(np.arange(mae.shape[0]), mae, label="mae", color="purple")
 
+            fontsize = 22
             ax.legend(loc="upper right", fontsize=fontsize)
             ax2.legend(loc="lower right", fontsize=fontsize)
 
-            # set font size of everything to 18 in the plot and twinplot
+            # set font size
             for item in ([ax.title, ax.xaxis.label, ax.yaxis.label, ax2.yaxis.label] +
                          ax.get_xticklabels() + ax.get_yticklabels() + ax2.get_xticklabels() + ax2.get_yticklabels()):
+                item.set_fontsize(fontsize)
+        plt.show()
+
+    @staticmethod
+    def plot_predictions_together(y_pred: np.ndarray, y_true: np.ndarray):
+        if y_true.shape != y_pred.shape:
+            raise ValueError("Shapes of y_true and y_pred must be equal")
+        if y_true.ndim != 2:
+            raise ValueError("y_true and y_pred must be 2 dimensional")
+
+        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(50, 12))
+        ax.set_title(f"Predictions together")
+        ax.plot(y_true[:, 0], label="true", color="green")
+        for i in range(y_true.shape[1]):
+            color = (1 - 1 / y_true.shape[1] * i, 0, 1 / y_true.shape[1] * i)
+            ax.plot(np.arange(i, i + y_true.shape[0]), y_pred[:, i], label=f"pred {i + 1} hour", color=color)
+
+            fontsize = 22
+            ax.legend(loc="lower right", fontsize=fontsize)
+
+            # set font size
+            for item in ([ax.title, ax.xaxis.label, ax.yaxis.label] +
+                         ax.get_xticklabels() + ax.get_yticklabels()):
                 item.set_fontsize(fontsize)
         plt.show()
 
