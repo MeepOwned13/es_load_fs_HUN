@@ -110,6 +110,76 @@ class GRU(nn.Module):
         return self.fc(x)
 
 
+class ConvNetForRecursion(nn.Module):
+    def __init__(self, channels=(32, 64), kernel_sizes=(12, 6), noise_sigma=0.0, dropout=0.0, **kwargs):
+        super(ConvNetForRecursion, self).__init__()
+        self.seq_len = 24
+        self.conv = nn.Sequential(
+            nn.ZeroPad2d((kernel_sizes[0] // 2, 0, 0, 0)),
+            nn.Conv1d(1, channels[0], kernel_sizes[0]),
+            nn.ReLU(),
+            nn.MaxPool1d(2, padding=1),
+            nn.ZeroPad2d((kernel_sizes[1] // 2, 0, 0, 0)),
+            nn.Conv1d(channels[0], channels[1], kernel_sizes[1]),
+            nn.ReLU(),
+            nn.MaxPool1d(2, padding=0),
+        )
+        out = self.conv(torch.randn(1, 1, self.seq_len)).shape[-1]
+        self.fc = nn.Sequential(
+            tmd.GaussianNoise(noise_sigma),
+            nn.Flatten(1, -1),
+            nn.Dropout(dropout),
+            nn.Linear(channels[1] * out, 1),
+        )
+
+    def forward(self, x):
+        x = x.reshape(-1, 1, self.seq_len)
+        x = self.conv(x)
+        x = self.fc(x)
+        return x
+
+
+class MultiModelRec(nn.Module):
+    def __init__(self, features=11, pred_len=3, hidden_size=15, num_layers=2, dropout=0.0,
+                 hid_noise=0.0, bidirectional=True, **kwargs):
+        super(MultiModelRec, self).__init__()
+        self.out_features = 3
+        self.pred_len = pred_len
+
+        self.gru = GRU(features, 1, hidden_size, num_layers, dropout, hid_noise, bidirectional)
+        self.tcn = TCN(24, 1, (32,) * 2, kernel_size=5, dropout=dropout, hid_noise=hid_noise)
+        self.conv = ConvNetForRecursion((16, 32), (6, 12), 0.5, 0.05)
+
+    def forward(self, x, y, teacher_forcing=0.0):
+        batch_size = x.shape[0]
+
+        if y.shape[2] != self.gru.gru.input_size:
+            pre_calc = torch.concat((
+                torch.zeros(batch_size, self.pred_len, self.out_features).to(tl.TRAINER_LIB_DEVICE),
+                y), dim=2)
+            teacher_forcing = 0.0
+        else:
+            pre_calc = y
+
+        output = torch.zeros(batch_size, self.pred_len).to(tl.TRAINER_LIB_DEVICE)
+
+        for i in range(self.pred_len):
+            out = torch.concat((
+                self.gru(x),
+                self.tcn(x[:, :, 1]),
+                self.conv(x[:, :, 2])
+            ), dim=1)
+
+            output[:, i] = out[:, 0]
+
+            x = torch.cat((x[:, 1:], pre_calc[:, i].unsqueeze(1)), dim=1)
+            for j in range(self.out_features):  # roll teacher forcing for each feature
+                if torch.rand(1) > teacher_forcing:
+                    x[:, -1, j] = out[:, j]
+
+        return output
+
+
 # endregion
 
 
@@ -132,6 +202,7 @@ CONFIGS = {
         },
         'seq_len': 48,
         'pred_len': 3,
+        'extra_strat_params': {},
         'load_modifier': 'only_el_load',
     },
     'mimo_tcn': {
@@ -153,6 +224,7 @@ CONFIGS = {
         },
         'seq_len': 48,
         'pred_len': 3,
+        'extra_strat_params': {},
         'load_modifier': 'only_el_load',
     },
     'mimo_lstm': {
@@ -175,6 +247,7 @@ CONFIGS = {
         },
         'seq_len': 24,
         'pred_len': 3,
+        'extra_strat_params': {},
         'load_modifier': 'regular',
     },
     'seq2seq': {
@@ -197,6 +270,7 @@ CONFIGS = {
         },
         'seq_len': 24,
         'pred_len': 3,
+        'extra_strat_params': {},
         'load_modifier': 'regular',
     },
     'rec_om': {
@@ -219,9 +293,60 @@ CONFIGS = {
         },
         'seq_len': 24,
         'pred_len': 3,
+        'extra_strat_params': {},
         'load_modifier': 'both_full',
     },
-
+    'rec_mm_1l': {
+        'n_splits': 9,
+        'epochs': 10,
+        'lr': 0.001,
+        'batch_size': 1024,
+        'es_p': 25,
+        'wrapper': tl.RECMultiModelTSWrapper,
+        'file_name': 'final_eval_results/rec_mm_1l.csv',
+        'model': MultiModelRec,
+        'model_params': {
+            'features': 11,
+            'pred_len': 3,
+            'hidden_size': 50,
+            'num_layers': 1,
+            'bidirectional': True,
+            'dropout': 0.5,
+            'out_noise': 0.05
+        },
+        'seq_len': 24,
+        'pred_len': 3,
+        'extra_strat_params': {
+            'pred_first_n': 3,
+        },
+        'load_modifier': 'both_full',
+    },
+    'rec_mm_2l': {
+        'n_splits': 9,
+        'epochs': 10,
+        'lr': 0.001,
+        'batch_size': 1024,
+        'es_p': 25,
+        'wrapper': tl.RECMultiModelTSWrapper,
+        'file_name': 'final_eval_results/rec_mm_2l.csv',
+        'model': MultiModelRec,
+        'model_params': {
+            'features': 11,
+            'pred_len': 3,
+            'hidden_size': 30,
+            'num_layers': 2,
+            'bidirectional': True,
+            'dropout': 0.5,
+            'out_noise': 0.05
+        },
+        'seq_len': 24,
+        'pred_len': 3,
+        'extra_strat_params': {
+            'pred_first_n': 3,
+            'teacher_forcing_decay': 0.01,
+        },
+        'load_modifier': 'both_full',
+    },
 }
 
 # endregion
@@ -230,6 +355,11 @@ CONFIGS = {
 # region helper funcs
 
 def load_data(load_modifier='regular'):
+    """
+    Loads the data from the csv file and returns it as a numpy array
+    :param load_modifier: {regular, only_el_load, both_full}
+    :return: X and y as numpy arrays
+    """
     dataset = tl.load_country_wide_dataset('data/country_data.csv')
     if load_modifier == 'regular':
         l_x = dataset.to_numpy(dtype=np.float32)
