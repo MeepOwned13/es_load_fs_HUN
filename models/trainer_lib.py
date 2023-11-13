@@ -25,6 +25,12 @@ def mpe(p, t):
 
 
 def load_country_wide_dataset(file: str, nodrop=False):
+    """
+    Loads country_wide dataset from file
+    :param file: path to file
+    :param nodrop: don't drop any columns
+    :return: pandas Dataframe, with added time-series and lagged features
+    """
     df: pd.DataFrame = pd.read_csv(
         file,
         parse_dates=['Time'],
@@ -54,21 +60,50 @@ def load_country_wide_dataset(file: str, nodrop=False):
 
 
 class TimeSeriesDataset(Dataset):
+    """
+    CPU dataset class for time series data
+    """
     def __init__(self, x, y, seq_len=5, pred_len=1):
+        """
+        Initializes the dataset
+        :param x: features
+        :param y: what to predict
+        :param seq_len: sequence length
+        :param pred_len: prediction length
+        """
         self.X = x
         self.y = y
         self.seq_len = seq_len
         self.pred_len = pred_len
 
     def __len__(self):
+        """
+        Returns the length of the dataset
+        :return: length of dataset
+        """
         return len(self.X) - self.seq_len - self.pred_len
 
     def __getitem__(self, idx):
+        """
+        Returns the item at given index
+        :param idx: what index to return
+        :return: (features, labels) of correct lengths specified in __init__()
+        """
         return self.X[idx: idx + self.seq_len], self.y[idx + self.seq_len: idx + self.seq_len + self.pred_len]
 
 
 class TimeSeriesTensorDataset(TensorDataset):
+    """
+    GPU dataset class for time series data
+    """
     def __init__(self, x, y, seq_len=5, pred_len=1):
+        """
+        Initializes the dataset, moves tensors to GPU
+        :param x: features
+        :param y: what to predict
+        :param seq_len: sequence length
+        :param pred_len: prediction length
+        """
         super(TimeSeriesTensorDataset, self).__init__(torch.tensor(x), torch.tensor(y))
         self.X = self.tensors[0].to(TRAINER_LIB_DEVICE)
         self.y = self.tensors[1].to(TRAINER_LIB_DEVICE)
@@ -76,15 +111,30 @@ class TimeSeriesTensorDataset(TensorDataset):
         self.pred_len = pred_len
 
     def __len__(self):
+        """
+        Returns the length of the dataset
+        :return: length of dataset
+        """
         return len(self.X) - self.seq_len - self.pred_len
 
     def __getitem__(self, idx):
+        """
+        Returns the item at given index
+        :param idx: what index to return
+        :return: (features, labels) of correct lengths specified in __init__()
+        """
         return self.X[idx: idx + self.seq_len], self.y[idx + self.seq_len: idx + self.seq_len + self.pred_len]
 
 
 class EarlyStopper:
+    """Class implementing early stopping"""
     def __init__(self, patience=1, min_delta=0., model: nn.Module | None = None):
-        """Passing model is optional, used for checkpointing"""
+        """
+        Initializes the early stopper
+        :param patience: how many epochs to wait before stopping
+        :param min_delta: what is the minimum delta to not consider as deterioration
+        :param model: optional, used for checkpointing
+        """
         self.patience: int = patience
         self.min_delta: float = min_delta
         self.counter: int = 0
@@ -93,6 +143,11 @@ class EarlyStopper:
         self.__state_dict = None
 
     def __call__(self, validation_loss):
+        """
+        Checks if we should stop
+        :param validation_loss: current validation loss
+        :return: True if we should stop, False otherwise
+        """
         if validation_loss < self.min_validation_loss:
             self.min_validation_loss = validation_loss
             self.counter = 0
@@ -105,19 +160,32 @@ class EarlyStopper:
         return False
 
     def load_checkpoint(self):
+        """
+        Loads saved model checkpoint
+        :return: None
+        """
         if self.__model is not None and self.__state_dict is not None:
             with torch.no_grad():
                 self.__model.load_state_dict(self.__state_dict)
 
 
 class Grid:
+    """
+    Class implementing grid search using iterator protocol.
+    """
     def __init__(self, grid: dict):
+        """
+        :param grid: dictionary of hyperparameters to search through, specify each key and a list of values
+        """
         self._keys: list = list(grid.keys())
         self._values: list = list(grid.values())
         self._combinations: list = []
 
     def __iter__(self):
-        # choose all combinations of hyperparameters without repetition
+        """
+        Chooses all combinations of hyperparameters without repetition, not taking order into account
+        :return: self
+        """
         self._combinations = self._values[0]
         if len(self._keys) > 1:
             self._combinations = [[comb] + [item] for item in self._values[1] for comb in self._combinations]
@@ -128,6 +196,10 @@ class Grid:
         return self
 
     def __next__(self):
+        """
+        Returns next combination of hyperparameters
+        :return: next combination of hyperparameters as a dict
+        """
         if len(self._combinations) > 0:
             return dict(zip(self._keys, self._combinations.pop(0)))
         else:
@@ -159,7 +231,13 @@ class TSMWrapper(ABC):
     # region protected methods
 
     def _std_normalize(self, arr: np.ndarray, which: str, store: bool = False) -> np.ndarray:
-        """which can be: 'x' or 'y' or None, if it remains unset, no standard normalization info is stored"""
+        """
+        Handles internal normalization and normalization info storing
+        :param arr: array to normalize
+        :param which: {'x', 'y'}, for what kind of array should normalization be done
+        :param store: specifies if normalization info should be stored
+        :return: normalized array
+        """
         if which != 'x' and which != 'y':
             raise ValueError("Argument 'which' can only be: 'x' or 'y'")
 
@@ -189,6 +267,12 @@ class TSMWrapper(ABC):
         return (arr - mean) / std
 
     def _std_denormalize(self, arr: np.ndarray, which: str) -> np.ndarray:
+        """
+        Handles internal denormalization
+        :param arr: array to denormalize
+        :param which: {'x', 'y'}, for what kind of array should normalization be done
+        :return: denormalized array
+        """
         if which != 'x' and which != 'y':
             raise ValueError("Argument 'which' can only be: 'x' or 'y'")
 
@@ -212,7 +296,13 @@ class TSMWrapper(ABC):
         return res
 
     def _make_ts_dataset(self, x: np.ndarray, y: np.ndarray, store_norm_info: bool = False):
-        """Modifies internal mean and std to help denormalization later."""
+        """
+        Handles making the internal datasets used in training, validation and testing
+        :param x: X array to be used in dataset
+        :param y: y array to be used in dataset
+        :param store_norm_info: specifies if normalization info should be stored
+        :return: normalized TimeSeriesDataset if device is cpu, TimeSeriesTensorDataset if device is cuda
+        """
         x = self._std_normalize(x, 'x', store_norm_info)
         y = self._std_normalize(y, 'y', store_norm_info)
 
@@ -222,6 +312,14 @@ class TSMWrapper(ABC):
             return TimeSeriesTensorDataset(x, y, seq_len=self._seq_len, pred_len=self._pred_len)
 
     def _train_epoch(self, data_loader: DataLoader, lr=0.001, optimizer=None, loss_fn=nn.MSELoss()):
+        """
+        Trains the internal model for on epoch
+        :param data_loader: training dataloader
+        :param lr: learning rate
+        :param optimizer: optimizer, defaults to NAdam()
+        :param loss_fn: loss function, defaults to MSELoss()
+        :return: training loss
+        """
         optimizer = optimizer or torch.optim.NAdam(self._model.parameters(), lr=lr)
 
         self._model.train()
@@ -243,6 +341,21 @@ class TSMWrapper(ABC):
     def _train_model(self, train_loader: DataLoader, val_loader: DataLoader,
                      test_loader: DataLoader | None = None, epochs=100, lr=0.001, optimizer=None,
                      loss_fn=nn.MSELoss(), es_p=10, es_d=0., verbose=1, cp=False):
+        """
+        Trains, validates and tests internal model, prints info to stdout if requested
+        :param train_loader: training dataloader
+        :param val_loader: validation dataloader
+        :param test_loader: testing dataloader
+        :param epochs: how many epochs to train for
+        :param lr: learning rate
+        :param optimizer: optimizer, defaults to NAdam()
+        :param loss_fn: loss function, defaults to MSELoss()
+        :param es_p: early stop patience
+        :param es_d: early stop delta
+        :param verbose: verbosity levels, 0=no output, 1=single line updating output
+        :param cp: use checkpointing?
+        :return: (training losses, validation losses, test losses)
+        """
         optimizer: torch.optim.Optimizer = optimizer or torch.optim.NAdam(self._model.parameters(), lr=lr)
 
         has_test: bool = test_loader is not None
@@ -284,6 +397,12 @@ class TSMWrapper(ABC):
         return train_losses, val_losses, test_losses
 
     def _test_model(self, data_loader: DataLoader, loss_fn=nn.MSELoss()):
+        """
+        Tests internal model
+        :param data_loader: testing dataloader
+        :param loss_fn: loss function, defaults to MSELoss()
+        :return: testing loss
+        """
         self._model.eval()
         total_loss: float = 0
 
@@ -297,7 +416,11 @@ class TSMWrapper(ABC):
                 total_loss += loss.item()
         return total_loss / len(data_loader)
 
-    def _reset_all_weights(self) -> None:
+    def _reset_all_weights(self):
+        """
+        Recursively resets the models and it's internal Module-s states with random initialization
+        :return: None
+        """
         @torch.no_grad()
         def weight_reset(m: nn.Module):
             reset_parameters = getattr(m, "reset_parameters", None)
@@ -312,6 +435,23 @@ class TSMWrapper(ABC):
 
     def validate_ts_strategy(self, x: np.ndarray, y: np.ndarray, epochs: int, loss_fn=nn.MSELoss(), val_mod=8,
                              lr=0.001, batch_size=128, es_p=10, es_d=0., n_splits=6, verbose=2, cp=True, **kwargs):
+        """
+        Validates internal time-series model by testing it for given amount of folds, with given parameters
+        :param x: X to use for training, validation and testing, should be all the data we have
+        :param y: y to use for training, validation and testing, should be all the labels we have
+        :param epochs: epochs to train for
+        :param loss_fn: loss function, defaults to MSELoss()
+        :param val_mod: specifies the amount of data used as a validation set, proportional to the first fold
+        :param lr: learning rate
+        :param batch_size: batch size
+        :param es_p: early stop patience
+        :param es_d: early stop delta
+        :param n_splits: number of splits to validate for
+        :param verbose: verbosity level, 0=no output, 1=no training output, 2=all outputs
+        :param cp: use checkpointing?
+        :param kwargs: used to set parameters from dict
+        :return: (train losses, validation losses, test losses, metric losses) as nested lists for each fold
+        """
         ts_cv = TimeSeriesSplit(n_splits=n_splits)
 
         train_losses = []
@@ -354,6 +494,15 @@ class TSMWrapper(ABC):
         return train_losses, val_losses, test_losses, metric_losses
 
     def grid_search(self, x: np.ndarray, y: np.ndarray, g: Grid, loss_fn=nn.MSELoss(), verbose=1):
+        """
+        Performs grid search with given grid, prints to stdout if specified
+        :param x: X to use for training, validation and testing, should be all the data we have
+        :param y: y to use for training, validation and testing, should be all the labels we have
+        :param g: Grid class we specified the parameters in
+        :param loss_fn: loss function, defaults to MSELoss()
+        :param verbose: verbosity level, 0=no output, 1=output metric per grid, 2=output fold info, 3=all outputs
+        :return: (best_params, best_score) in a dict and float respectively
+        """
         best_params = None
         best_score = np.inf
         for i, params in enumerate(g):
@@ -378,6 +527,12 @@ class TSMWrapper(ABC):
         return best_params, best_score
 
     def predict(self, x: np.ndarray, y: np.ndarray):
+        """
+        Predict for given data via the internal model
+        :param x: X used for prediction
+        :param y: y, only used to return proper dimensions proportional to predictions
+        :return: (predictions, true values)
+        """
         self._model.eval()
         dataset: TimeSeriesDataset = self._make_ts_dataset(x, y)
         loader: DataLoader = DataLoader(dataset, batch_size=64, shuffle=False)
@@ -394,6 +549,11 @@ class TSMWrapper(ABC):
         return self._std_denormalize(predictions, 'y'), self._std_denormalize(true, 'y')
 
     def save_state(self, path):
+        """
+        Saves internal state to path
+        :param path: path to save to
+        :return: None
+        """
         state = {
             'state_dict': self._model.state_dict(),
             'seq_len': self._seq_len,
@@ -406,6 +566,11 @@ class TSMWrapper(ABC):
         torch.save(state, path)
 
     def load_state(self, path):
+        """
+        Load model from path, make sure it's a file you saved to via the classes method
+        :param path: path to load from
+        :return: None
+        """
         state = torch.load(path, map_location=TRAINER_LIB_DEVICE)
 
         self._seq_len = state['seq_len']
@@ -427,14 +592,34 @@ class TSMWrapper(ABC):
     def init_strategy(self):
         """
         Used to reset the strategy to its initial state.
-        Used in cross validation. Should initialize the model(s).
+        Used in cross validation. Should initialize the model.
         """
-        pass
+        self._reset_all_weights()
+        self._model = self._model.to(TRAINER_LIB_DEVICE)
 
     @abstractmethod
     def train_strategy(self, x_train: np.ndarray, y_train: np.ndarray, x_val: np.ndarray, y_val: np.ndarray,
                        x_test: np.ndarray | None = None, y_test: np.ndarray | None = None, epochs=100, lr=0.001,
                        optimizer=None, batch_size=128, loss_fn=nn.MSELoss(), es_p=10, es_d=0., verbose=1, cp=False):
+        """
+        Used to train the strategy on the specificied set of data.
+        :param x_train:
+        :param y_train:
+        :param x_val:
+        :param y_val:
+        :param x_test:
+        :param y_test:
+        :param epochs: epochs to train for
+        :param lr: learning rate
+        :param optimizer: optimizer
+        :param batch_size: batch size
+        :param loss_fn: loss function, defaults to MSELoss()
+        :param es_p: early stop patience
+        :param es_d: early stop delta
+        :param verbose: verbosity level
+        :param cp: use checkpointing?
+        :return: (train losses, validation losses, test losses, metric losses)
+        """
         pass
 
     @abstractmethod
@@ -442,11 +627,18 @@ class TSMWrapper(ABC):
         """
         This method should initialize any parameters that are needed for the strategy to work.
         Training parameters should not be initalized here.
+        :param kwargs: parameters to set
         """
         pass
 
     @abstractmethod
     def _predict_strategy(self, features: torch.Tensor, labels: torch.Tensor):
+        """
+        Strategy specific prediction, used to predict for given data.
+        :param features: features to predict from
+        :param labels: labels, used to return proper dimensions proportional to predictions
+        :return: (predictions, true values)
+        """
         pass
 
     # endregion
@@ -455,6 +647,13 @@ class TSMWrapper(ABC):
 
     @staticmethod
     def print_evaluation_info(preds: np.ndarray, true: np.ndarray, to_graph: int = 1000):
+        """
+        Prints evaluation metrics to stdout, and displays given length graph of predictions.
+        :param preds: model predictions
+        :param true: true values
+        :param to_graph: how many points to graph
+        :return: None
+        """
         loss = nn.MSELoss()(torch.tensor(preds), torch.tensor(true)).item()
         print("Overall loss metrics:")
         print(f"MAE: {np.mean(np.abs(preds - true)):8.4f}")
@@ -472,12 +671,20 @@ class TSMWrapper(ABC):
                   f"MAPE: {mape(preds[:, i], true[:, i]) * 100:6.3f}%, "
                   f"MPE: {mpe(preds[:, i], true[:, i]) * 100:6.3f}%")
 
-        TSMWrapper.plot_predictions(preds[-to_graph:], true[-to_graph:])
+        TSMWrapper.plot_predictions_per_hour(preds[-to_graph:], true[-to_graph:])
 
     @staticmethod
-    def plot_predictions(y_pred: np.ndarray, y_true: np.ndarray):
+    def plot_predictions_per_hour(y_pred: np.ndarray, y_true: np.ndarray):
+        """
+        Plots predictions on different graphs per hour
+        :param y_pred: predictions
+        :param y_true: true values
+        :return: None
+        """
         if y_true.shape != y_pred.shape:
             raise ValueError("Shapes of y_true and y_pred must be equal")
+        if y_true.ndim != 2:
+            raise ValueError("y_true and y_pred must be 2 dimensional")
 
         n_of_plots = y_true.shape[1]
         fig, axs = plt.subplots(nrows=n_of_plots, ncols=1, figsize=(50, 12*n_of_plots))
@@ -489,7 +696,6 @@ class TSMWrapper(ABC):
 
             mae = np.abs(pred - true)
 
-            fontsize = 22
             ax = axs[i]
             ax.set_title(f"Predicting ahead by {i+1} hour")
             ax.plot(true, label="true", color="green")
@@ -499,17 +705,54 @@ class TSMWrapper(ABC):
             ax2.set_ylim(0, np.max(mae) * 5)
             ax2.bar(np.arange(mae.shape[0]), mae, label="mae", color="purple")
 
+            fontsize = 22
             ax.legend(loc="upper right", fontsize=fontsize)
             ax2.legend(loc="lower right", fontsize=fontsize)
 
-            # set font size of everything to 18 in the plot and twinplot
+            # set font size
             for item in ([ax.title, ax.xaxis.label, ax.yaxis.label, ax2.yaxis.label] +
                          ax.get_xticklabels() + ax.get_yticklabels() + ax2.get_xticklabels() + ax2.get_yticklabels()):
                 item.set_fontsize(fontsize)
         plt.show()
 
     @staticmethod
+    def plot_predictions_together(y_pred: np.ndarray, y_true: np.ndarray):
+        """
+        Plots predictions on the same graph, make arrays are 2D, use plot_predictions_per_hour() for 1D
+        :param y_pred: predictions
+        :param y_true: true values
+        :return: None
+        """
+        if y_true.shape != y_pred.shape:
+            raise ValueError("Shapes of y_true and y_pred must be equal")
+        if y_true.ndim != 2:
+            raise ValueError("y_true and y_pred must be 2 dimensional")
+
+        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(50, 12))
+        ax.set_title(f"Predictions together")
+        ax.plot(y_true[:, 0], label="true", color="green")
+        for i in range(y_true.shape[1]):
+            color = (1 - 1 / y_true.shape[1] * i, 0, 1 / y_true.shape[1] * i)
+            ax.plot(np.arange(i, i + y_true.shape[0]), y_pred[:, i], label=f"pred {i + 1} hour", color=color)
+
+            fontsize = 22
+            ax.legend(loc="lower right", fontsize=fontsize)
+
+            # set font size
+            for item in ([ax.title, ax.xaxis.label, ax.yaxis.label] +
+                         ax.get_xticklabels() + ax.get_yticklabels()):
+                item.set_fontsize(fontsize)
+        plt.show()
+
+    @staticmethod
     def plot_losses(train_losses: list, val_losses: list, test_losses: list):
+        """
+        Plots losses for each fold
+        :param train_losses: training losses
+        :param val_losses: validational losses
+        :param test_losses: testing losses
+        :return: None
+        """
         fig, axs = plt.subplots(nrows=1, ncols=len(train_losses), figsize=(8 * len(train_losses), 7))
         for i in range(len(train_losses)):
             axs[i].set_title(f"{i+1} fold")
@@ -523,14 +766,22 @@ class TSMWrapper(ABC):
 
 
 class MIMOTSWrapper(TSMWrapper):
+    """
+    Wraps the MIMO strategy for Time-series prediction.
+    """
     def __init__(self, model: nn.Module, seq_len: int, pred_len: int):
+        """
+        Initializes the wrapper
+        :param model: model to use
+        :param seq_len: sequence length to use
+        :param pred_len: length of predictions given
+        """
         super(MIMOTSWrapper, self).__init__(model=model, seq_len=seq_len, pred_len=pred_len)
 
     # region override methods
     @override
     def init_strategy(self):
-        self._reset_all_weights()
-        self._model = self._model.to(TRAINER_LIB_DEVICE)
+        super().init_strategy()
 
     @override
     def _setup_strategy(self, **kwargs):
@@ -570,7 +821,17 @@ class MIMOTSWrapper(TSMWrapper):
 
 
 class S2STSWRAPPER(MIMOTSWrapper):
+    """
+    Wraps the sequence-to-sequence strategy for Time-series prediction.
+    """
     def __init__(self, model: nn.Module, seq_len: int, pred_len: int, teacher_forcing_decay=0.01):
+        """
+        Initializes the wrapper
+        :param model: model to use
+        :param seq_len: sequence length to use
+        :param pred_len: length of predictions given
+        :param teacher_forcing_decay: how fast teacher forcing should decay
+        """
         super(S2STSWRAPPER, self).__init__(model, seq_len, pred_len)
         if pred_len <= 1:
             raise ValueError("pred_len must be greater than 1")
@@ -581,6 +842,11 @@ class S2STSWRAPPER(MIMOTSWrapper):
 
     @override
     def init_strategy(self):
+        """
+        Used to reset the strategy to its initial state.
+        Used in cross validation. Should initialize the model.
+        Resets teacher forcing ratio too.
+        """
         super().init_strategy()
         self.teacher_forcing_ratio = 0.5
 
@@ -609,8 +875,18 @@ class S2STSWRAPPER(MIMOTSWrapper):
 
 
 class RECOneModelTSWrapper(MIMOTSWrapper):
+    """
+    Wraps single model recursive strategy for Time-series prediction.
+    """
     def __init__(self, model: nn.Module, seq_len: int, pred_len: int,  main_feature=0, teacher_forcing_decay=0.02):
-        """Main feature is what we want to predict."""
+        """
+        Initializes the wrapper
+        :param model: model to use
+        :param seq_len: sequence length to use
+        :param pred_len: length of predictions given
+        :param main_feature: which feature to predict and evaluate for
+        :param teacher_forcing_decay: how fast teacher forcing should decay
+        """
         super(RECOneModelTSWrapper, self).__init__(model, seq_len=seq_len, pred_len=pred_len)
         self._teacher_forcing = self._og_tf = 1.0
         self._teacher_forcing_decay = teacher_forcing_decay
@@ -620,6 +896,11 @@ class RECOneModelTSWrapper(MIMOTSWrapper):
 
     @override
     def init_strategy(self):
+        """
+        Used to reset the strategy to its initial state.
+        Used in cross validation. Should initialize the model.
+        Resets teacher forcing ratio too.
+        """
         super().init_strategy()
         self._teacher_forcing = self._og_tf
 
@@ -686,8 +967,18 @@ class RECOneModelTSWrapper(MIMOTSWrapper):
 
 
 class RECMultiModelTSWrapper(MIMOTSWrapper):
+    """
+    Wraps multi-model recursive strategy for Time-series prediction.
+    """
     def __init__(self, model: nn.Module, seq_len: int, pred_len: int, pred_first_n: int, teacher_forcing_decay=0.02):
-        """pred_features should contain features in order of training, so that the last feature is the target feature"""
+        """
+        Initializes the wrapper
+        :param model: model to use
+        :param seq_len: sequence length to use
+        :param pred_len: length of predictions given
+        :param pred_first_n: first how many features the model predicts, rest are pulled from labels
+        :param teacher_forcing_decay: how fast teacher forcing should decay
+        """
         super(RECMultiModelTSWrapper, self).__init__(model=model, seq_len=seq_len, pred_len=pred_len)
         if pred_len <= 1:
             raise ValueError("pred_len must be greater than 1")
