@@ -671,7 +671,8 @@ class TSMWrapper(ABC):
                   f"MAPE: {mape(preds[:, i], true[:, i]) * 100:6.3f}%, "
                   f"MPE: {mpe(preds[:, i], true[:, i]) * 100:6.3f}%")
 
-        TSMWrapper.plot_predictions_per_hour(preds[-to_graph:], true[-to_graph:])
+        if to_graph > 0:
+            TSMWrapper.plot_predictions_per_hour(preds[-to_graph:], true[-to_graph:])
 
     @staticmethod
     def plot_predictions_per_hour(y_pred: np.ndarray, y_true: np.ndarray):
