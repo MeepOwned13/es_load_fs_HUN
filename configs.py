@@ -12,12 +12,12 @@ class ConvNetLong(nn.Module):
     def __init__(self, seq_len=48, dropout=0, noise=0.05, **kwargs):
         super(ConvNetLong, self).__init__()
         self.conv = nn.Sequential(
-            nn.ZeroPad2d((8, 0, 0, 0)),
-            weight_norm(nn.Conv1d(1, 64, 16)),
+            nn.ZeroPad2d((6, 0, 0, 0)),
+            nn.Conv1d(1, 64, 12),
             nn.ReLU(),
             nn.MaxPool1d(2, padding=0),
-            nn.ZeroPad2d((7, 0, 0, 0)),
-            weight_norm(nn.Conv1d(64, 128, 14)),
+            nn.ZeroPad2d((8, 0, 0, 0)),
+            nn.Conv1d(64, 256, 16),
             nn.ReLU(),
             nn.MaxPool1d(2, padding=0),
         )
@@ -25,10 +25,10 @@ class ConvNetLong(nn.Module):
         self.fc = nn.Sequential(
             tmd.GaussianNoise(noise),
             nn.Flatten(1, -1),
-            nn.Linear(128 * out, 2 * 64),
+            nn.Linear(256 * out, 256),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(2 * 64, 3),
+            nn.Linear(256, 3),
         )
         self.seq_len = seq_len
 
@@ -190,7 +190,7 @@ CONFIGS = {
         'n_splits': 9,
         'epochs': 1000,
         'lr': 0.001,
-        'batch_size': 1024,
+        'batch_size': 2048,
         'es_p': 20,
         'wrapper': tl.MIMOTSWrapper,
         'file_name': 'final_eval_results/mimo_cnn.csv',
