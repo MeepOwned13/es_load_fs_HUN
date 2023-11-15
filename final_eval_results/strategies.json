@@ -1,5 +1,42 @@
 {
-    "mimo_cnn": {},
+    "mimo_cnn": {
+        "fold_1": {
+            "RMSE": 150.4029,
+            "model": "final_eval_results/mimo_cnn/fold_1.pt"
+        },
+        "fold_2": {
+            "RMSE": 116.5132,
+            "model": "final_eval_results/mimo_cnn/fold_2.pt"
+        },
+        "fold_3": {
+            "RMSE": 104.8086,
+            "model": "final_eval_results/mimo_cnn/fold_3.pt"
+        },
+        "fold_4": {
+            "RMSE": 112.4946,
+            "model": "final_eval_results/mimo_cnn/fold_4.pt"
+        },
+        "fold_5": {
+            "RMSE": 128.838,
+            "model": "final_eval_results/mimo_cnn/fold_5.pt"
+        },
+        "fold_6": {
+            "RMSE": 150.7287,
+            "model": "final_eval_results/mimo_cnn/fold_6.pt"
+        },
+        "fold_7": {
+            "RMSE": 144.556,
+            "model": "final_eval_results/mimo_cnn/fold_7.pt"
+        },
+        "fold_8": {
+            "RMSE": 165.5866,
+            "model": "final_eval_results/mimo_cnn/fold_8.pt"
+        },
+        "fold_9": {
+            "RMSE": 167.9148,
+            "model": "final_eval_results/mimo_cnn/fold_9.pt"
+        }
+    },
     "mimo_tcn": {
         "fold_1": {
             "RMSE": 78.5371,
