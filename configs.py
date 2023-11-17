@@ -111,7 +111,7 @@ class GRU(nn.Module):
 
 
 class ConvNetForRecursion(nn.Module):
-    def __init__(self, channels=(32, 64), kernel_sizes=(12, 6), noise_sigma=0.0, dropout=0.0, **kwargs):
+    def __init__(self, channels=(32, 64), kernel_sizes=(12, 6), noise=0.0, dropout=0.0, **kwargs):
         super(ConvNetForRecursion, self).__init__()
         self.seq_len = 24
         self.conv = nn.Sequential(
@@ -126,7 +126,7 @@ class ConvNetForRecursion(nn.Module):
         )
         out = self.conv(torch.randn(1, 1, self.seq_len)).shape[-1]
         self.fc = nn.Sequential(
-            tmd.GaussianNoise(noise_sigma),
+            tmd.GaussianNoise(noise),
             nn.Flatten(1, -1),
             nn.Dropout(dropout),
             nn.Linear(channels[1] * out, 1),
@@ -141,13 +141,13 @@ class ConvNetForRecursion(nn.Module):
 
 class MultiModelRec(nn.Module):
     def __init__(self, features=11, pred_len=3, hidden_size=15, num_layers=2, dropout=0.0,
-                 hid_noise=0.0, bidirectional=True, **kwargs):
+                 noise=0.0, bidirectional=True, **kwargs):
         super(MultiModelRec, self).__init__()
         self.out_features = 3
         self.pred_len = pred_len
 
-        self.gru = GRU(features, 1, hidden_size, num_layers, dropout, hid_noise, bidirectional)
-        self.tcn = TCN(24, 1, (32,) * 2, kernel_size=5, dropout=dropout, hid_noise=hid_noise)
+        self.gru = GRU(features, 1, hidden_size, num_layers, dropout, noise, bidirectional)
+        self.tcn = TCN(24, 1, (32,) * 2, kernel_size=5, dropout=dropout, noise=noise)
         self.conv = ConvNetForRecursion((16, 32), (6, 12), 0.5, 0.05)
 
     def forward(self, x, y, teacher_forcing=0.0):
@@ -243,7 +243,7 @@ CONFIGS = {
             'num_layers': 3,
             'bidirectional': True,
             'dropout': 0.3,
-            'out_noise': 0.05
+            'noise': 0.05
         },
         'seq_len': 24,
         'pred_len': 3,
@@ -266,7 +266,7 @@ CONFIGS = {
             'num_layers': 1,
             'bidirectional': True,
             'dropout': 0.5,
-            'out_noise': 0.05
+            'noise': 0.05
         },
         'seq_len': 24,
         'pred_len': 3,
@@ -289,7 +289,7 @@ CONFIGS = {
             'num_layers': 5,
             'bidirectional': True,
             'dropout': 0.5,
-            'out_noise': 0.05
+            'noise': 0.05
         },
         'seq_len': 24,
         'pred_len': 3,
@@ -298,7 +298,7 @@ CONFIGS = {
     },
     'rec_mm_1l': {
         'n_splits': 9,
-        'epochs': 10,
+        'epochs': 1000,
         'lr': 0.001,
         'batch_size': 1024,
         'es_p': 25,
@@ -312,18 +312,19 @@ CONFIGS = {
             'num_layers': 1,
             'bidirectional': True,
             'dropout': 0.5,
-            'out_noise': 0.05
+            'noise': 0.05
         },
         'seq_len': 24,
         'pred_len': 3,
         'extra_strat_params': {
             'pred_first_n': 3,
+            'teacher_forcing_decay': 0.01,
         },
         'load_modifier': 'both_full',
     },
     'rec_mm_2l': {
         'n_splits': 9,
-        'epochs': 10,
+        'epochs': 1000,
         'lr': 0.001,
         'batch_size': 1024,
         'es_p': 25,
@@ -337,7 +338,7 @@ CONFIGS = {
             'num_layers': 2,
             'bidirectional': True,
             'dropout': 0.5,
-            'out_noise': 0.05
+            'noise': 0.05
         },
         'seq_len': 24,
         'pred_len': 3,
