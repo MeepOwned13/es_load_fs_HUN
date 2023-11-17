@@ -186,6 +186,24 @@ class MultiModelRec(nn.Module):
 # region Configs
 
 CONFIGS = {
+    'mimo_rf': {
+        'WARNING': 'HANDLES DIFFERENTLY FROM TSMWRAPPER MODELS',
+        'n_splits': 9,
+        'file_name': 'final_eval_results/mimo_rf.csv',
+        'model_params': {
+            'max_depth': 50,
+            'max_features': 0.75,
+            'n_estimators': 150,
+        },
+        'seq_len': 24,
+        'pred_len': 3,
+        'load_modifier': 'regular',
+        # filler data for the eval_final_config.py script
+        'epochs': None,
+        'lr': None,
+        'batch_size': None,
+        'es_p': None,
+    },
     'mimo_cnn': {
         'n_splits': 9,
         'epochs': 1000,
@@ -375,5 +393,13 @@ def load_data(load_modifier='regular'):
         raise ValueError(f"Invalid load modifier: {load_modifier}")
     return l_x, l_y
 
+
+def make_rf_data(x, y, seq_len, pred_len):
+    rf_x = np.zeros((x.shape[0] - seq_len - pred_len, seq_len * x.shape[1]))
+    rf_y = np.zeros((x.shape[0] - seq_len - pred_len, pred_len))
+    for i in range(rf_x.shape[0]):
+        rf_x[i] = x[i:i + seq_len].flatten()
+        rf_y[i] = y[i + seq_len:i + seq_len + pred_len]
+    return rf_x, rf_y
 
 # endregion

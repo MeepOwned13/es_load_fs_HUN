@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from torch import nn
 from sklearn.model_selection import TimeSeriesSplit
+from sklearn.ensemble import RandomForestRegressor
 from math import sqrt as math_sqrt
 import pandas as pd
 from timeit import default_timer as timer
@@ -9,26 +10,11 @@ import models.trainer_lib as tl
 import os
 import argparse
 import json
-from configs import CONFIGS
+from configs import CONFIGS, load_data, make_rf_data
+import joblib
 
 
 # region Helper functions
-
-def load_data(load_modifier='regular'):
-    dataset = tl.load_country_wide_dataset('data/country_data.csv')
-    if load_modifier == 'regular':
-        l_x = dataset.to_numpy(dtype=np.float32)
-        l_y = dataset['el_load'].to_numpy(dtype=np.float32)
-    elif load_modifier == 'only_el_load':
-        l_x = dataset['el_load'].to_numpy(dtype=np.float32)
-        l_y = l_x.copy()
-    elif load_modifier == 'both_full':
-        l_x = dataset.to_numpy(dtype=np.float32)
-        l_y = l_x.copy()
-    else:
-        raise ValueError(f"Invalid load modifier: {load_modifier}")
-    return l_x, l_y
-
 
 def calc_metrics(p, t):
     loss = nn.MSELoss()(torch.tensor(p), torch.tensor(t)).item()
@@ -47,7 +33,7 @@ def calc_metrics(p, t):
 # region Argument parsing and setup
 
 parser = argparse.ArgumentParser(description='Evaluate final models and strategies')
-parser.add_argument('-c', '--config', choices=CONFIGS.keys(),
+parser.add_argument('-c', '--config', choices=list(CONFIGS.keys()) + ['mimo_rf'],
                     required=True, help='Model and strategy to evaluate')
 parser.add_argument('-r', '--repeat', type=int, default=6)
 parser.add_argument('-sw', '--skip_write', action='store_true',
@@ -66,7 +52,12 @@ BATCH_SIZE = config['batch_size']
 ES_P = config['es_p']
 FILE_NAME = config['file_name']
 
-wrapper = config['wrapper'](config['model'](**config['model_params']), config['seq_len'], config['pred_len'])
+wrapper = config['wrapper'](
+    config['model'](**config['model_params']),
+    config['seq_len'], config['pred_len'],
+    **config['extra_strat_params']
+) if args.config != 'mimo_rf' else None
+
 ts_cv = TimeSeriesSplit(n_splits=N_SPLITS)
 
 X, y = load_data(config['load_modifier'])
@@ -91,6 +82,10 @@ if save_model and os.path.exists('final_eval_results/strategies.json'):
 else:
     strat_json = {k: {} for k in CONFIGS.keys()}
 
+# add config if it previously didn't exist
+if args.config not in strat_json:
+    strat_json[args.config] = {}
+
 full_run_start = timer()
 for _ in range(args.repeat):
     for i, (train_idxs, test_idxs) in enumerate(ts_cv.split(X)):
@@ -104,16 +99,26 @@ for _ in range(args.repeat):
         x_train, x_val, x_test = X[train_idxs], X[val_idxs], X[test_idxs]
         y_train, y_val, y_test = y[train_idxs], y[val_idxs], y[test_idxs]
 
-        wrapper.init_strategy()
-        train_loss, val_loss, test_loss = wrapper.train_strategy(x_train, y_train, x_val, y_val, x_test, y_test,
-                                                                 epochs=EPOCHS, lr=LR, batch_size=BATCH_SIZE,
-                                                                 loss_fn=nn.MSELoss(), es_p=ES_P, es_d=0,
-                                                                 verbose=0, cp=True)
+        rf = None
+        rf_test_x = None
+        rf_test_y = None
+        if args.config == 'mimo_rf':
+            rf_X, rf_y = make_rf_data(x_train, y_train, config['seq_len'], config['pred_len'])
+
+            rf = RandomForestRegressor(n_jobs=os.cpu_count()-2, **config['model_params'])
+            rf.fit(rf_X, rf_y)
+
+            rf_test_x, rf_test_y = make_rf_data(x_test, y_test, config['seq_len'], config['pred_len'])
+        else:
+            wrapper.init_strategy()
+            _ = wrapper.train_strategy(x_train, y_train, x_val, y_val, x_test, y_test,
+                                       epochs=EPOCHS, lr=LR, batch_size=BATCH_SIZE, loss_fn=nn.MSELoss(),
+                                       es_p=ES_P, es_d=0, verbose=0, cp=True)
 
         train_finish = timer()
         training_time = train_finish - st_time
 
-        preds, true = wrapper.predict(x_test, y_test)
+        preds, true = wrapper.predict(x_test, y_test) if args.config != 'mimo_rf' else rf.predict(rf_test_x), rf_test_y
 
         pred_finish = timer()
         prediction_time = pred_finish - train_finish
@@ -143,7 +148,10 @@ for _ in range(args.repeat):
             if fold in strat_json[args.config] and strat_json[args.config][fold]['RMSE'] < rmse_all:
                 pass
             else:
-                wrapper.save_state(f'final_eval_results/{args.config}/{fold}.pt')
+                if args.config != 'mimo_rf':
+                    wrapper.save_state(f'final_eval_results/{args.config}/{fold}.pt')
+                else:
+                    joblib.dump(rf, f'final_eval_results/{args.config}/{fold}.joblib', compress=9)
                 strat_json[args.config][fold] = {
                     'RMSE': rmse_all,
                     'model': f'final_eval_results/{args.config}/{fold}.pt',
