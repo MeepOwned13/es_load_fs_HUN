@@ -118,7 +118,7 @@ for _ in range(args.repeat):
         train_finish = timer()
         training_time = train_finish - st_time
 
-        preds, true = wrapper.predict(x_test, y_test) if args.config != 'mimo_rf' else rf.predict(rf_test_x), rf_test_y
+        preds, true = wrapper.predict(x_test, y_test) if args.config != 'mimo_rf' else (rf.predict(rf_test_x), rf_test_y)
 
         pred_finish = timer()
         prediction_time = pred_finish - train_finish
