@@ -748,15 +748,17 @@ class TSMWrapper(ABC):
     @staticmethod
     def plot_losses(train_losses: list, val_losses: list, test_losses: list):
         """
-        Plots losses for each fold
+        Plots losses for each fold, expects list of lists as arguments
         :param train_losses: training losses
         :param val_losses: validational losses
         :param test_losses: testing losses
         :return: None
         """
         fig, axs = plt.subplots(nrows=1, ncols=len(train_losses), figsize=(8 * len(train_losses), 7))
+        if len(train_losses) == 1:
+            axs = [axs]  # if we have 1 plot, the returned axs is not a list, but a single object
         for i in range(len(train_losses)):
-            axs[i].set_title(f"{i+1} fold")
+            axs[i].set_title(f"{i+1} fold" if len(train_losses) > 1 else "Losses")
             axs[i].plot(train_losses[i], label="train_loss", color="g")
             axs[i].plot(val_losses[i], label="val_loss", color="b")
             axs[i].plot(test_losses[i], label="test_loss", color="r")
