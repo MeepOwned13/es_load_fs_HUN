@@ -111,7 +111,7 @@ class GRUDecoder(nn.Module):
         self.noise = GaussianNoise(noise)
 
     def forward(self, x, h):
-        x, hidden = self.gru(x, h)
+        _, hidden = self.gru(x, h)
 
         out = hidden.permute(1, 0, 2)
         out = self.flatten(out)
@@ -119,7 +119,7 @@ class GRUDecoder(nn.Module):
         out = self.dropout(out)
         out = self.fc(out)
 
-        return out, x, hidden
+        return out, hidden
 
 
 class Seq2seq(nn.Module):
@@ -142,12 +142,12 @@ class Seq2seq(nn.Module):
         output = torch.zeros(batch_size, self.pred_len).to(MODEL_DEFINITION_DEVICE)
 
         for i in range(self.pred_len):
-            out, _, _ = self.dec(dec_input, hidden)
+            out, hidden = self.dec(dec_input, hidden)
             output[:, i] = out[:, 0]
             if y is not None and torch.rand(1) < teacher_forcing:
-                dec_input = torch.cat((dec_input, y[:, i].reshape(-1, 1, 1)), dim=1)
+                dec_input = y[:, i].reshape(-1, 1, 1)
             else:
-                dec_input = torch.cat((dec_input, out.unsqueeze(1)), dim=1)
+                dec_input = out.unsqueeze(1)
 
         return output
 
