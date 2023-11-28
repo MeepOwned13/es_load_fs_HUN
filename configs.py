@@ -75,8 +75,8 @@ class LSTM(nn.Module):
 
     def forward(self, x):
         batch_size = x.shape[0]
-        h_0 = torch.zeros(self.h_n_dim * self.num_layers, batch_size, self.hidden_size).requires_grad_().to(tl.TRAINER_LIB_DEVICE)
-        c_0 = torch.zeros(self.h_n_dim * self.num_layers, batch_size, self.hidden_size).requires_grad_().to(tl.TRAINER_LIB_DEVICE)
+        h_0 = torch.zeros(self.h_n_dim * self.num_layers, batch_size, self.hidden_size).to(tl.TRAINER_LIB_DEVICE)
+        c_0 = torch.zeros(self.h_n_dim * self.num_layers, batch_size, self.hidden_size).to(tl.TRAINER_LIB_DEVICE)
 
         output, (h_n, c_n) = self.lstm(x, (h_0, c_0))
         h_n = torch.permute(h_n, (1, 0, 2))
@@ -102,7 +102,7 @@ class GRU(nn.Module):
 
     def forward(self, x):
         batch_size = x.shape[0]
-        hidden = torch.zeros(self.h_n_dim * self.num_layers, batch_size, self.hidden_size).requires_grad_().to(
+        hidden = torch.zeros(self.h_n_dim * self.num_layers, batch_size, self.hidden_size).to(
             tl.TRAINER_LIB_DEVICE)
 
         _, hidden = self.gru(x, hidden)

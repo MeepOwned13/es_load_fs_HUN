@@ -92,8 +92,7 @@ class GRUEncoder(nn.Module):
     def forward(self, x):
         batch_size = x.shape[0]
         x = self.noise(x)
-        h_0 = (torch.zeros(self.num_layers * self.h_n_dim, batch_size, self.hidden_size)
-               .requires_grad_().to(MODEL_DEFINITION_DEVICE))
+        h_0 = (torch.zeros(self.num_layers * self.h_n_dim, batch_size, self.hidden_size).to(MODEL_DEFINITION_DEVICE))
         _, hidden = self.gru(x, h_0)
 
         return hidden
