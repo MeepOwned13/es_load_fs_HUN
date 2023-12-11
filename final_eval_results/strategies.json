@@ -139,15 +139,15 @@
             "model": "final_eval_results/seq2seq/fold_6.pt"
         },
         "fold_7": {
-            "RMSE": 76.7087,
+            "RMSE": 79.8988,
             "model": "final_eval_results/seq2seq/fold_7.pt"
         },
         "fold_8": {
-            "RMSE": 92.3285,
+            "RMSE": 95.3208,
             "model": "final_eval_results/seq2seq/fold_8.pt"
         },
         "fold_9": {
-            "RMSE": 95.5576,
+            "RMSE": 96.9275,
             "model": "final_eval_results/seq2seq/fold_9.pt"
         }
     },
