@@ -180,6 +180,47 @@ class MultiModelRec(nn.Module):
         return output
 
 
+class FullMultiModelRec(nn.Module):
+    def __init__(self, features=11, pred_len=3, hidden_size=15, num_layers=2, dropout=0.0,
+                 hid_noise=0.0, bidirectional=True, **kwargs):
+        super(FullMultiModelRec, self).__init__()
+        self.out_features = 3
+        self.pred_len = pred_len
+
+        self.gru = GRU(features, 1, hidden_size, num_layers, dropout, hid_noise, bidirectional)
+        self.ft1 = GRU(features - 1, 1, 20, 2, dropout, hid_noise, True)
+        self.ft2 = GRU(features - 1, 1, 20, 2, dropout, hid_noise, True)
+
+    def forward(self, x, y, teacher_forcing=0.0):
+        batch_size = x.shape[0]
+
+        if y.shape[2] != self.gru.gru.input_size:
+            pre_calc = torch.concat((
+                torch.zeros(batch_size, self.pred_len, self.out_features).to(tl.TRAINER_LIB_DEVICE),
+                y), dim=2)
+            teacher_forcing = 0.0
+        else:
+            pre_calc = y
+
+        output = torch.zeros(batch_size, self.pred_len).to(tl.TRAINER_LIB_DEVICE)
+
+        for i in range(self.pred_len):
+            out = torch.concat((
+                self.gru(x),
+                self.ft1(x[:, :, 1:]),
+                self.ft2(x[:, :, 1:])
+            ), dim=1)
+
+            output[:, i] = out[:, 0]
+
+            x = torch.cat((x[:, 1:], pre_calc[:, i].unsqueeze(1)), dim=1)
+            for j in range(self.out_features):  # roll teacher forcing for each feature
+                if torch.rand(1) > teacher_forcing:
+                    x[:, -1, j] = out[:, j]
+
+        return output
+
+
 # endregion
 
 
@@ -349,6 +390,32 @@ CONFIGS = {
         'wrapper': tl.RECMultiModelTSWrapper,
         'file_name': 'final_eval_results/rec_mm_2l.csv',
         'model': MultiModelRec,
+        'model_params': {
+            'features': 11,
+            'pred_len': 3,
+            'hidden_size': 30,
+            'num_layers': 2,
+            'bidirectional': True,
+            'dropout': 0.5,
+            'noise': 0.05
+        },
+        'seq_len': 24,
+        'pred_len': 3,
+        'extra_strat_params': {
+            'pred_first_n': 3,
+            'teacher_forcing_decay': 0.01,
+        },
+        'load_modifier': 'both_full',
+    },
+    'rec_mm_fullgru': {
+        'n_splits': 9,
+        'epochs': 1000,
+        'lr': 0.001,
+        'batch_size': 1024,
+        'es_p': 25,
+        'wrapper': tl.RECMultiModelTSWrapper,
+        'file_name': 'final_eval_results/rec_mm_fullgru.csv',
+        'model': FullMultiModelRec,
         'model_params': {
             'features': 11,
             'pred_len': 3,

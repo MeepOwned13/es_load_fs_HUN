@@ -302,5 +302,43 @@
             "RMSE": 140.466,
             "model": "final_eval_results/mimo_rf/fold_9.pt"
         }
+    },
+    "rec_mm_fullgru": {
+        "fold_1": {
+            "RMSE": 139.2978,
+            "model": "final_eval_results/rec_mm_fullgru/fold_1.pt"
+        },
+        "fold_2": {
+            "RMSE": 82.435,
+            "model": "final_eval_results/rec_mm_fullgru/fold_2.pt"
+        },
+        "fold_3": {
+            "RMSE": 68.093,
+            "model": "final_eval_results/rec_mm_fullgru/fold_3.pt"
+        },
+        "fold_4": {
+            "RMSE": 73.4429,
+            "model": "final_eval_results/rec_mm_fullgru/fold_4.pt"
+        },
+        "fold_5": {
+            "RMSE": 82.9362,
+            "model": "final_eval_results/rec_mm_fullgru/fold_5.pt"
+        },
+        "fold_6": {
+            "RMSE": 79.6519,
+            "model": "final_eval_results/rec_mm_fullgru/fold_6.pt"
+        },
+        "fold_7": {
+            "RMSE": 78.6708,
+            "model": "final_eval_results/rec_mm_fullgru/fold_7.pt"
+        },
+        "fold_8": {
+            "RMSE": 94.1877,
+            "model": "final_eval_results/rec_mm_fullgru/fold_8.pt"
+        },
+        "fold_9": {
+            "RMSE": 100.2154,
+            "model": "final_eval_results/rec_mm_fullgru/fold_9.pt"
+        }
     }
 }
