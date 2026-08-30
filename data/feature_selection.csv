@@ -1,0 +1,14 @@
+;score;el_load;prec;temp;rhum;grad;pres;wind;Vel_tviz;Bal_tviz;holiday;weekend;covid;hour;weekday;dayofmonth;dayofyear;month;year;el_load_lag24;el_load_lag48;el_load_lag72;el_load_lag96
+1;143.29441050775702;True;False;False;False;False;False;False;False;False;False;False;False;False;False;False;False;False;False;False;False;False;False
+2;131.6115385549734;True;False;False;False;True;False;False;False;False;False;False;False;False;False;False;False;False;False;False;False;False;False
+3;125.30576629411232;True;False;False;False;True;False;False;False;False;False;True;False;False;False;False;False;False;False;False;False;False;False
+4;119.67026538090556;True;False;False;False;True;False;False;False;False;False;True;False;True;False;False;False;False;False;False;False;False;False
+5;117.68023733320658;True;False;False;False;True;False;False;False;False;True;True;False;True;False;False;False;False;False;False;False;False;False
+6;116.42080334678306;True;False;False;False;True;False;False;False;False;True;True;False;True;False;False;False;False;False;True;False;False;False
+7;115.67563071485868;True;False;False;False;True;False;False;False;False;True;True;False;True;False;False;False;False;True;True;False;False;False
+8;115.51650739611684;True;True;False;False;True;False;False;False;False;True;True;False;True;False;False;False;False;True;True;False;False;False
+9;115.50612360227137;True;True;False;False;True;False;False;False;False;True;True;False;True;True;False;False;False;True;True;False;False;False
+10;115.46005779985805;True;True;False;False;True;False;False;False;False;True;True;False;True;True;False;False;True;True;True;False;False;False
+11;115.4283934312875;True;True;False;False;True;False;False;False;False;True;True;False;True;True;False;True;True;True;True;False;False;False
+12;115.92064623555689;True;True;False;False;True;False;False;False;False;True;True;False;True;True;False;True;True;True;True;False;False;True
+13;116.08800543378163;True;True;False;False;True;False;False;False;False;True;True;True;True;True;False;True;True;True;True;False;False;True
